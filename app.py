@@ -66,7 +66,11 @@ KNOT_PASS = os.environ.get("KNOT_PASS", "")
 KNOT_URL = f"http://{KNOT_HOST}/rest/iot/bluetooth/peripheral-devices"
 KNOT_GPS_URL = f"http://{KNOT_HOST}/rest/system/gps/monitor"
 KNOT_LTE_URL = f"http://{KNOT_HOST}/rest/interface/lte/monitor"
-POLL_SECONDS = 60
+POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
+# Poll ridotto di notte (orario locale; 0 = disattivato, si usa sempre POLL_SECONDS)
+NIGHT_START = int(os.environ.get("NIGHT_START", "22"))
+NIGHT_END = int(os.environ.get("NIGHT_END", "7"))
+POLL_SECONDS_NIGHT = int(os.environ.get("POLL_SECONDS_NIGHT", "0"))
 GPS_POLL_SECONDS = 120   # il monitor GPS è bloccante (~15-20s): cadenza dedicata
 
 # Intervallo di reporting adattivo: se la barca è ferma (speed < soglia) la
@@ -379,7 +383,7 @@ def _samples_daily(table):
         today = day_curve(now.strftime("%Y-%m-%d"))
         yesterday = day_curve((now - timedelta(days=1)).strftime("%Y-%m-%d"))
         past = []
-        for k in range(2, 9):
+        for k in range(2, 2 + max(1, _cfg("SOLAR_HISTORY_DAYS", 7))):
             c = day_curve((now - timedelta(days=k)).strftime("%Y-%m-%d"))
             if c:
                 past.append(c)
@@ -685,6 +689,51 @@ def parse_mppt(dev):
 # --------------------------------------------------------------------------
 # Polling del KNOT
 # --------------------------------------------------------------------------
+# Override a runtime (tab Settings):vincolati ai limiti di sicurezza
+_runtime_cfg = {}    # es. {"POLL_SECONDS": "120"}
+
+def _cfg(name, default):
+    if name in _runtime_cfg:
+        try:
+            return int(_runtime_cfg[name])
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
+def _poll_seconds():
+    h = datetime.now().hour
+    night = _cfg("POLL_SECONDS_NIGHT", POLL_SECONDS_NIGHT)
+    ns = _cfg("NIGHT_START", NIGHT_START)
+    ne = _cfg("NIGHT_END", NIGHT_END)
+    if night and (h >= ns or h < ne):
+        return max(60, night)
+    return max(60, _cfg("POLL_SECONDS", POLL_SECONDS))
+
+
+def _cfg_snapshot():
+    return {
+        "POLL_SECONDS": max(60, _cfg("POLL_SECONDS", POLL_SECONDS)),
+        "POLL_SECONDS_NIGHT": _cfg("POLL_SECONDS_NIGHT", POLL_SECONDS_NIGHT),
+        "NIGHT_START": _cfg("NIGHT_START", NIGHT_START),
+        "NIGHT_END": _cfg("NIGHT_END", NIGHT_END),
+        "GPS_POLL_SECONDS": max(60, _cfg("GPS_POLL_SECONDS", GPS_POLL_SECONDS)),
+        "GATT_POLL_SECONDS": max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS)),
+        "STATIONARY_SPEED_KN": _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN),
+        "GPS_STATIONARY_INTERVAL": max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL)),
+        "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
+    }
+
+
+def _cfg_float(name, default):
+    if name in _runtime_cfg:
+        try:
+            return float(_runtime_cfg[name])
+        except (TypeError, ValueError):
+            pass
+    return default
+
+
 _state = {
     "bm6": None,
     "mppt": None,
@@ -794,19 +843,21 @@ def gps_loop():
     di radio accesa) e la POST allo storico."""
     last_fix_ts = 0.0
     while True:
+        stationary_speed = _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN)
+        stationary_interval = max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL))
         gps = _state.get("gps") or {}
         stationary = (gps.get("valid")
-                      and (gps.get("speed_kn") or 99) < STATIONARY_SPEED_KN)
+                      and (gps.get("speed_kn") or 99) < stationary_speed)
         now = time.time()
         elapsed = now - last_fix_ts
-        if stationary and elapsed < GPS_STATIONARY_INTERVAL:
+        if stationary and elapsed < stationary_interval:
             # resta fermo: ri-controlla ogni 60 s finché non scade l'intervallo
-            time.sleep(min(60, max(5, GPS_STATIONARY_INTERVAL - elapsed)))
+            time.sleep(min(60, max(5, stationary_interval - elapsed)))
             continue
         fetch_gps()
         if (_state.get("gps") or {}).get("valid"):
             last_fix_ts = time.time()
-        time.sleep(GPS_POLL_SECONDS)
+        time.sleep(max(60, _cfg("GPS_POLL_SECONDS", GPS_POLL_SECONDS)))
 
 
 def _gatt_post(path, body):
@@ -984,7 +1035,7 @@ def bl917_loop():
 def gatt_loop():
     while True:
         fetch_bm6_gatt()
-        time.sleep(GATT_POLL_SECONDS)
+        time.sleep(max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS)))
 
 
 def fetch_lte():
@@ -1116,7 +1167,7 @@ def poll_loop():
         log_solar_sample()
         log_load_sample()
         fetch_lte()
-        time.sleep(POLL_SECONDS)
+        time.sleep(_poll_seconds())
 
 
 # --------------------------------------------------------------------------
@@ -1128,7 +1179,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.12.0"
+VERSION = "1.13.0"
 
 
 @app.route("/api/data")
@@ -1195,7 +1246,54 @@ def api_load_daily():
         return jsonify({"error": "load history unavailable"}), 503
 
 
-@app.route("/api/stats/totals")
+@app.route("/api/settings")
+@app.route("/nautilus/api/settings")
+@app.route(URL_PREFIX_ALIAS + "/api/settings")
+def api_settings_get():
+    return jsonify(_cfg_snapshot())
+
+
+@app.route("/api/settings", methods=["POST"])
+@app.route("/nautilus/api/settings", methods=["POST"])
+@app.route(URL_PREFIX_ALIAS + "/api/settings", methods=["POST"])
+def api_settings_post():
+    """Override a runtime dei parametri di poll (tab Settings).
+    Valori fuori dai limiti vengono rifiutati; null azzera l'override."""
+    body = request.get_json(silent=True) or {}
+    limits = {
+        "POLL_SECONDS": (60, 3600),
+        "POLL_SECONDS_NIGHT": (0, 3600),
+        "GPS_POLL_SECONDS": (60, 3600),
+        "GATT_POLL_SECONDS": (60, 3600),
+        "STATIONARY_SPEED_KN": (0.0, 20.0),
+        "GPS_STATIONARY_INTERVAL": (30, 7200),
+        "SOLAR_HISTORY_DAYS": (1, 30),
+        "NIGHT_START": (0, 23),
+        "NIGHT_END": (0, 23),
+    }
+    for k, v in body.items():
+        if k not in limits:
+            return jsonify({"error": "unknown setting: " + k}), 400
+        if v is None:
+            _runtime_cfg.pop(k, None)
+            continue
+        try:
+            num = float(v)
+        except (TypeError, ValueError):
+            return jsonify({"error": k + " must be a number"}), 400
+        lo, hi = limits[k]
+        if num == 0 and k == "POLL_SECONDS_NIGHT":
+            pass    # 0 = night mode disattivata
+        elif not (lo <= num <= hi):
+            return jsonify({"error": k + f" must be between {lo} and {hi}"}), 400
+        if num != int(num):
+            return jsonify({"error": k + " must be an integer"}), 400
+        _runtime_cfg[k] = str(int(num))
+    log.info("Runtime settings aggiornate: %s", _runtime_cfg)
+    return jsonify(_cfg_snapshot())
+
+
+@app.route("/stats")
 @app.route("/nautilus/api/stats/totals")
 @app.route(URL_PREFIX_ALIAS + "/api/stats/totals")
 def api_stats_totals():
@@ -1218,6 +1316,12 @@ def track_page():
 @app.route(URL_PREFIX_ALIAS + "/stats")
 def stats_page():
     return STATS_HTML.replace("{{BOAT}}", BOAT_NAME)
+
+@app.route("/settings")
+@app.route("/nautilus/settings")
+@app.route(URL_PREFIX_ALIAS + "/settings")
+def settings_page():
+    return SETTINGS_HTML.replace("{{BOAT}}", BOAT_NAME)
 
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -1290,6 +1394,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <span class="ver" id="version"></span>
   <a href="track" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Track history →</a>
   <a href="stats" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Stats →</a>
+  <a href="settings" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Settings →</a>
 </header>
 <div class="grid">
   <div class="card" id="bm6"></div>
@@ -1726,6 +1831,132 @@ async function load() {
       + "<td class='num neg'>" + fmt(lv) + "</td>"
       + "<td class='num net'>" + (net >= 0 ? "+" : "") + fmt(net) + "</td></tr>";
   }).join("");
+}
+load();
+</script>
+</body>
+</html>
+"""
+
+
+SETTINGS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Nautilus</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", system-ui, sans-serif;
+         min-height: 100vh; padding: 20px; max-width: 720px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 1.3rem; color: #38bdf8; letter-spacing: .5px; }
+  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid #334155;
+           padding: 5px 10px; border-radius: 8px; background: #1e293b; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+          padding: 18px; margin-bottom: 18px; }
+  .card h2 { font-size: 1rem; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
+  .card p.hint { color: #64748b; font-size: .72rem; margin-bottom: 14px; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+         padding: 10px 0; border-bottom: 1px solid #334155; }
+  .row:last-child { border-bottom: 0; }
+  .row label { font-size: .85rem; }
+  .row label small { display: block; color: #64748b; font-size: .7rem; margin-top: 2px; }
+  .row input { width: 110px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155;
+               border-radius: 8px; padding: 7px 10px; font-size: .85rem; text-align: right; }
+  .row .unit { color: #64748b; font-size: .75rem; width: 46px; }
+  .btn { background: #1d4ed8; color: #fff; border: 0; border-radius: 8px; padding: 10px 22px;
+         font-size: .85rem; cursor: pointer; margin-top: 6px; }
+  .btn:hover { background: #2563eb; }
+  .btn.reset { background: #334155; margin-left: 10px; }
+  .msg { margin-top: 12px; font-size: .8rem; min-height: 1.2em; }
+  .msg.ok { color: #34d399; } .msg.err { color: #f87171; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#9881;&#65039; Settings</h1>
+  <a class="back" href="./">&#8592; Dashboard</a>
+</header>
+
+<div class="card">
+  <h2>Polling intervals</h2>
+  <p class="hint">Runtime overrides (seconds). Changes apply within one cycle, without restarting the container. "Reset all" restores the .env values.</p>
+  <div class="row">
+    <label>BLE / LTE poll<small>main data poll cycle (solar &amp; load samples included)</small></label>
+    <span><input id="POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
+  </div>
+  <div class="row">
+    <label>Night poll<small>used between NIGHT_START and NIGHT_END; 0 = night mode off</small></label>
+    <span><input id="POLL_SECONDS_NIGHT" type="number" min="60" max="3600"><span class="unit">s</span></span>
+  </div>
+  <div class="row">
+    <label>Night window<small>night mode active from hour... to hour... (local time)</small></label>
+    <span><input id="NIGHT_START" type="number" min="0" max="23" style="width:60px"><span class="unit">to</span>
+    <input id="NIGHT_END" type="number" min="0" max="23" style="width:60px"><span class="unit">h</span></span>
+  </div>
+  <div class="row">
+    <label>GPS poll (moving)<small>blocking GPS monitor call to the KNOT while the boat moves</small></label>
+    <span><input id="GPS_POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
+  </div>
+  <div class="row">
+    <label>BM6 GATT poll<small>real voltage read via persistent GATT connection</small></label>
+    <span><input id="GATT_POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Adaptive GPS (stationary)</h2>
+  <p class="hint">While the boat is stationary the GPS call is skipped entirely.</p>
+  <div class="row">
+    <label>Stationary threshold<small>below this speed the boat counts as stationary</small></label>
+    <span><input id="STATIONARY_SPEED_KN" type="number" step="0.1" min="0" max="20"><span class="unit">kn</span></span>
+  </div>
+  <div class="row">
+    <label>Stationary GPS interval<small>seconds between GPS calls while stationary</small></label>
+    <span><input id="GPS_STATIONARY_INTERVAL" type="number" min="30" max="7200"><span class="unit">s</span></span>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Forecast</h2>
+  <div class="row">
+    <label>Solar/load forecast history<small>how many past days feed the forecast average</small></label>
+    <span><input id="SOLAR_HISTORY_DAYS" type="number" min="1" max="30"><span class="unit">days</span></span>
+  </div>
+</div>
+
+<button class="btn" onclick="save()">Save</button>
+<button class="btn reset" onclick="resetAll()">Reset all</button>
+<div class="msg" id="msg"></div>
+
+<script>
+const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END",
+  "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "STATIONARY_SPEED_KN",
+  "GPS_STATIONARY_INTERVAL", "SOLAR_HISTORY_DAYS"];
+async function load() {
+  const d = await (await fetch("api/settings")).json();
+  FIELDS.forEach(f => { if (d[f] !== undefined) document.getElementById(f).value = d[f]; });
+}
+async function save() {
+  const msg = document.getElementById("msg");
+  const body = {};
+  FIELDS.forEach(f => {
+    const v = document.getElementById(f).value;
+    if (v !== "") body[f] = Number(v);
+  });
+  const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+  const d = await r.json();
+  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Saved \u2713"; load(); }
+  else { msg.className = "msg err"; msg.textContent = d.error || "error"; }
+}
+async function resetAll() {
+  const body = {}; FIELDS.forEach(f => body[f] = null);
+  const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
+  const msg = document.getElementById("msg");
+  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Reset to .env values \u2713"; load(); }
+  else { msg.className = "msg err"; msg.textContent = "error"; }
 }
 load();
 </script>

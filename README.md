@@ -27,6 +27,7 @@ per-boat code changes.
   indicators when a sensor stops transmitting.
 - **Adaptive GPS reporting** — when the boat is stationary the expensive blocking GPS call to the KNOT is skipped (configurable interval), reducing power and data consumption.
 - **Solar production history** — power samples are logged to SQLite and shown as a daily graph (today vs. yesterday) with a forecast built from previous days.
+- **Consumption monitoring** — load current is logged too; a "Current used" graph sits next to solar production, and a `/stats` page totals produced/consumed energy by month and year with the net balance.
 - **JSON API** — everything available at `/api/data`.
 
 Full documentation: [docs/MANUAL.md](docs/MANUAL.md)

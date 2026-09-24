@@ -190,6 +190,22 @@ Note: on boats whose MPPT registers are unreachable (Power Queen behind the
 RouterOS limitation, see §2.2) no samples are recorded until that path or a
 BL917/Victron device provides power data.
 
+## 4d. Consumption history and energy stats
+
+Consumption (W) is sampled the same way from the load current
+(`i_load × v_bat`, Victron or BL917 load output) into the `load_samples`
+table, served by `/api/load/daily` (today/yesterday/forecast curves) and
+shown in the dashboard as a "Current used" card next to solar production.
+
+The `/stats` page shows the cumulative energy accounting:
+
+- bar comparison of produced vs consumed kWh per month
+- yearly table (produced, consumed, net)
+- monthly table with net balance
+
+Totals come from `/api/stats/totals` (kWh estimated from 60 s samples:
+`sum(watt) × 60 / 3.6M`). Samples persist in `SOLAR_DB`.
+
 ## 5. Position history (optional backend)
 
 Valid GPS fixes are POSTed to an external "conticini" management app

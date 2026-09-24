@@ -1,0 +1,4 @@
+flask
+requests
+websockets>=12.0
+pycryptodome

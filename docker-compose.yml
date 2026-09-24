@@ -1,0 +1,23 @@
+services:
+  nautilus-telemetry:
+    build: .
+    container_name: nautilus-telemetry
+    restart: always
+    environment:
+      - TZ=Europe/Rome
+      - INTERNAL_TOKEN=${INTERNAL_TOKEN}
+      - BOAT_NAME=${BOAT_NAME}
+      - KNOT_HOST=${KNOT_HOST:-}
+      - KNOT_USER=${KNOT_USER:-}
+      - KNOT_PASS=${KNOT_PASS:-}
+      - BM6_MAC=${BM6_MAC:-}
+      - MPPT_MAC=${MPPT_MAC:-}
+      - CONTICINI_BASE=${CONTICINI_BASE:-}
+      - URL_PREFIX_ALIAS=${URL_PREFIX_ALIAS:-}
+      - BL917_ENABLED=${BL917_ENABLED:-0}
+      - BL917_WS=${BL917_WS:-}
+      - BL917_MAC=${BL917_MAC:-}
+      - VICTRON_MAC=${VICTRON_MAC:-}
+      - VICTRON_SERIAL=${VICTRON_SERIAL:-}
+    ports:
+      - "8080:8080"

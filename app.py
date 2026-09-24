@@ -295,6 +295,8 @@ def _solar_db():
     con = sqlite3.connect(SOLAR_DB, timeout=10)
     con.execute("CREATE TABLE IF NOT EXISTS solar_samples ("
                 "ts TEXT NOT NULL, watt REAL NOT NULL, source TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS load_samples ("
+                "ts TEXT NOT NULL, watt REAL NOT NULL, source TEXT)")
     con.commit()
     return con
 
@@ -326,17 +328,38 @@ def log_solar_sample():
         log.warning("Solar sample non salvato: %s", exc)
 
 
-def solar_daily():
-    """Curve di produzione: oggi, ieri e previsione (media giorni precedenti).
+def log_load_sample():
+    """Registra un campione di consumo (W): i_load * v_bat dalla fonte disponibile."""
+    try:
+        watt, source = None, None
+        v = _state.get("victron")
+        if isinstance(v, dict) and isinstance(v.get("i_load"), (int, float)) \
+                and isinstance(v.get("v_bat"), (int, float)):
+            watt, source = round(float(v["i_load"]) * float(v["v_bat"]), 1), "victron"
+        else:
+            m = _state.get("mppt")
+            if isinstance(m, dict) and m.get("model") == "BL917" \
+                    and isinstance(m.get("i_load"), (int, float)) \
+                    and isinstance(m.get("v_bat"), (int, float)):
+                watt, source = round(float(m["i_load"]) * float(m["v_bat"]), 1), "bl917"
+        if watt is None:
+            return
+        con = _solar_db()
+        con.execute("INSERT INTO load_samples VALUES (?, ?, ?)",
+                    (datetime.now().isoformat(timespec="seconds"), watt, source))
+        con.commit()
+        con.close()
+    except Exception as exc:
+        log.warning("Load sample non salvato: %s", exc)
 
-    Ritorna bucket da 30 minuti: [[ora_decimale, watt_medio], ...].
-    """
+
+def _samples_daily(table):
+    """Curve 30-min di una tabella di campioni: oggi, ieri, previsione."""
     from datetime import timedelta
 
     def day_curve(day):
         rows = con.execute(
-            "SELECT ts, watt FROM solar_samples WHERE ts LIKE ?",
-            (day + "%",)).fetchall()
+            "SELECT ts, watt FROM " + table + " WHERE ts LIKE ?", (day + "%",)).fetchall()
         buckets = {}
         for ts, w in rows:
             try:
@@ -348,7 +371,6 @@ def solar_daily():
                 for i, v in sorted(buckets.items())]
 
     def curve_wh(curve):
-        # bucket da 30 min: Wh = watt * 0.5 h per bucket
         return round(sum(w * 0.5 for _, w in curve), 1) if curve else 0.0
 
     now = datetime.now()
@@ -370,13 +392,43 @@ def solar_daily():
             forecast = [[round(i / 2, 2), round(sum(v) / len(v), 1)]
                         for i, v in sorted(bmap.items())]
         return {
-            "today": today,
-            "yesterday": yesterday,
-            "forecast": forecast,
-            "today_wh": curve_wh(today),
-            "yesterday_wh": curve_wh(yesterday),
+            "today": today, "yesterday": yesterday, "forecast": forecast,
+            "today_wh": curve_wh(today), "yesterday_wh": curve_wh(yesterday),
             "history_days": len(past),
         }
+    finally:
+        con.close()
+
+
+def solar_daily():
+    """Curve di produzione solare: oggi, ieri e previsione (bucket 30 min)."""
+    return _samples_daily("solar_samples")
+
+
+def load_daily():
+    """Curve di consumo: oggi, ieri e previsione (bucket 30 min)."""
+    return _samples_daily("load_samples")
+
+
+def _totals():
+    """Totali per mese e per anno di produzione e consumo (kWh)."""
+    con = _solar_db()
+    try:
+        def month_year(table):
+            rows = con.execute(
+                "SELECT substr(ts,1,7) ym, sum(watt)*60.0/3600000.0 kwh, "
+                "count(*) n FROM " + table + " WHERE length(ts)>=10 "
+                "GROUP BY substr(ts,1,7) ORDER BY ym").fetchall()
+            monthly = [{"month": ym, "kwh": round(kwh, 2), "samples": n} for ym, kwh, n in rows]
+            ymap = {}
+            for m in monthly:
+                y = m["month"][:4]
+                ymap.setdefault(y, 0.0)
+                ymap[y] += m["kwh"]
+            yearly = [{"year": y, "kwh": round(v, 2)} for y, v in sorted(ymap.items())]
+            return {"monthly": monthly, "yearly": yearly}
+        return {"solar": month_year("solar_samples"),
+                "load": month_year("load_samples")}
     finally:
         con.close()
 
@@ -1062,6 +1114,7 @@ def poll_loop():
     while True:
         fetch_devices()
         log_solar_sample()
+        log_load_sample()
         fetch_lte()
         time.sleep(POLL_SECONDS)
 
@@ -1075,7 +1128,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.11.0"
+VERSION = "1.12.0"
 
 
 @app.route("/api/data")
@@ -1130,12 +1183,41 @@ def api_solar_daily():
         log.warning("solar daily: %s", exc)
         return jsonify({"error": "solar history unavailable"}), 503
 
+@app.route("/api/load/daily")
+@app.route("/nautilus/api/load/daily")
+@app.route(URL_PREFIX_ALIAS + "/api/load/daily")
+def api_load_daily():
+    """Curve di consumo: oggi, ieri e previsione (bucket 30 min)."""
+    try:
+        return jsonify(load_daily())
+    except Exception as exc:
+        log.warning("load daily: %s", exc)
+        return jsonify({"error": "load history unavailable"}), 503
+
+
+@app.route("/api/stats/totals")
+@app.route("/nautilus/api/stats/totals")
+@app.route(URL_PREFIX_ALIAS + "/api/stats/totals")
+def api_stats_totals():
+    """Totali per mese e anno di produzione e consumo (kWh)."""
+    try:
+        return jsonify(_totals())
+    except Exception as exc:
+        log.warning("stats totals: %s", exc)
+        return jsonify({"error": "stats unavailable"}), 503
+
 
 @app.route("/track")
 @app.route("/nautilus/track")
 @app.route(URL_PREFIX_ALIAS + "/track")
 def track_page():
     return TRACK_HTML.replace("{{BOAT}}", BOAT_NAME)
+
+@app.route("/stats")
+@app.route("/nautilus/stats")
+@app.route(URL_PREFIX_ALIAS + "/stats")
+def stats_page():
+    return STATS_HTML.replace("{{BOAT}}", BOAT_NAME)
 
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -1207,13 +1289,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <span id="status">loading…</span>
   <span class="ver" id="version"></span>
   <a href="track" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Track history →</a>
+  <a href="stats" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Stats →</a>
 </header>
 <div class="grid">
   <div class="card" id="bm6"></div>
   <div class="card" id="mppt"></div>
   <div class="card" id="gps"></div>
   <div class="card" id="lte"></div>
-  <div class="card" id="solar" style="grid-column: 1 / -1;"></div>
+  <div class="card" id="solar"></div>
+  <div class="card" id="load"></div>
 </div>
 <script>
 function esc(s) { return String(s ?? "—").replace(/[&<>"]/g, c => ({"&":"&"+"#38;","<":"&"+"#60;",">":"&"+"#62;",'"':"&"+"#34;"}[c])); }
@@ -1472,8 +1556,8 @@ window._showMap = function(mode) {
 refresh();
 setInterval(refresh, 5000);
 
-// ---- Solar production graph (today / yesterday / forecast) ----
-function solarPath(curve, x0, y0, w, h, maxW) {
+// ---- Power graphs (solar production / current used) ----
+function powerPath(curve, x0, y0, w, h, maxW) {
   if (!curve || !curve.length) return "";
   return curve.map(p => {
     const px = x0 + (p[0] / 24) * w;
@@ -1481,26 +1565,11 @@ function solarPath(curve, x0, y0, w, h, maxW) {
     return px.toFixed(1) + "," + py.toFixed(1);
   }).join(" ");
 }
-async function refreshSolar() {
-  const card = document.getElementById("solar");
-  let d;
-  try { d = await (await fetch("api/solar/daily")).json(); }
-  catch (e) {
-    card.innerHTML = "<h2>\u2600\ufe0f Solar production</h2><div class='note'>history unavailable</div>";
-    return;
-  }
-  if (d.error) {
-    card.innerHTML = "<h2>\u2600\ufe0f Solar production</h2><div class='note'>" + esc(d.error) + "</div>";
-    return;
-  }
-  const hasData = (d.today && d.today.length) || (d.yesterday && d.yesterday.length);
-  if (!hasData) {
-    card.innerHTML = "<h2>\u2600\ufe0f Solar production</h2><div class='note'>No samples yet: the graph fills in as the MPPT reports power (needs MPPT registers, BL917 or Victron data).</div>";
-    return;
-  }
+function powerSvg(d, color, colorDim) {
   const W = 720, H = 200, x0 = 34, y0 = 10, gw = W - 44, gh = H - 34;
-  const maxW = Math.max(10, ...((d.today || []).concat(d.yesterday || [], d.forecast || [])).map(p => p[1]));
-  const yticks = [0, maxW / 2, maxW].map(v => Math.round(v));
+  const all = (d.today || []).concat(d.yesterday || [], d.forecast || []);
+  const maxW = Math.max(10, ...all.map(p => p[1]));
+  const yticks = [0, Math.round(maxW / 2), Math.round(maxW)];
   let svg = "<svg viewBox='0 0 " + W + " " + H + "' style='width:100%;height:auto'>";
   svg += "<line x1='" + x0 + "' y1='" + (y0 + gh) + "' x2='" + (x0 + gw) + "' y2='" + (y0 + gh) + "' stroke='#334155'/>";
   for (let hh = 0; hh <= 24; hh += 4) {
@@ -1514,28 +1583,156 @@ async function refreshSolar() {
   });
   svg += "<text x='" + (x0 - 4) + "' y='" + (y0 + 3) + "' fill='#475569' font-size='10' text-anchor='end'>W</text>";
   if (d.yesterday && d.yesterday.length)
-    svg += "<polyline fill='none' stroke='#64748b' stroke-width='1.5' points='" + solarPath(d.yesterday, x0, y0, gw, gh, maxW) + "'/>";
+    svg += "<polyline fill='none' stroke='" + colorDim + "' stroke-width='1.5' points='" + powerPath(d.yesterday, x0, y0, gw, gh, maxW) + "'/>";
   if (d.forecast && d.forecast.length)
-    svg += "<polyline fill='none' stroke='#38bdf8' stroke-width='1.5' stroke-dasharray='5,4' points='" + solarPath(d.forecast, x0, y0, gw, gh, maxW) + "'/>";
+    svg += "<polyline fill='none' stroke='#38bdf8' stroke-width='1.5' stroke-dasharray='5,4' points='" + powerPath(d.forecast, x0, y0, gw, gh, maxW) + "'/>";
   if (d.today && d.today.length) {
-    const pts = solarPath(d.today, x0, y0, gw, gh, maxW).split(" ");
+    const pts = powerPath(d.today, x0, y0, gw, gh, maxW).split(" ");
+    const c256 = color.replace("#", "");
     svg += "<polygon fill='rgba(245,158,11,.15)' points='" + (x0 + "," + (y0 + gh) + " " + pts.join(" ") + " " + (x0 + gw) + "," + (y0 + gh)) + "'/>";
-    svg += "<polyline fill='none' stroke='#f59e0b' stroke-width='2' points='" + pts.join(" ") + "'/>";
+    svg += "<polyline fill='none' stroke='" + color + "' stroke-width='2' points='" + pts.join(" ") + "'/>";
   }
   svg += "</svg>";
-  card.innerHTML = "<h2>\u2600\ufe0f Solar production <span class='chip ok'>\u2248 " + (d.today_wh || 0) + " Wh today</span></h2>"
+  return svg;
+}
+async function refreshPower(cardId, apiPath, title, color, colorDim, whLabel, emptyNote) {
+  const card = document.getElementById(cardId);
+  let d;
+  try { d = await (await fetch(apiPath)).json(); }
+  catch (e) {
+    card.innerHTML = "<h2>" + title + "</h2><div class='note'>history unavailable</div>";
+    return;
+  }
+  if (d.error) {
+    card.innerHTML = "<h2>" + title + "</h2><div class='note'>" + esc(d.error) + "</div>";
+    return;
+  }
+  if (!(d.today && d.today.length) && !(d.yesterday && d.yesterday.length)) {
+    card.innerHTML = "<h2>" + title + "</h2><div class='note'>" + emptyNote + "</div>";
+    return;
+  }
+  card.innerHTML = "<h2>" + title + " <span class='chip ok'>\u2248 " + (d.today_wh || 0) + " " + whLabel + " today</span></h2>"
     + "<div style='display:flex;gap:14px;font-size:.72rem;color:#94a3b8;margin:4px 0 6px'>"
-    + "<span><span style='color:#f59e0b'>\u25cf</span> today</span>"
-    + (d.yesterday_wh ? "<span><span style='color:#64748b'>\u25cf</span> yesterday (" + d.yesterday_wh + " Wh)</span>" : "")
-    + (d.forecast ? "<span><span style='color:#38bdf8'>\u25cf</span> forecast (" + d.history_days + "d avg)</span>" : "")
-    + "</div>" + svg;
+    + "<span><span style='color:" + color + "'>&#9679;</span> today</span>"
+    + (d.yesterday_wh ? "<span><span style='color:" + colorDim + "'>&#9679;</span> yesterday (" + d.yesterday_wh + " " + whLabel + ")</span>" : "")
+    + (d.forecast ? "<span><span style='color:#38bdf8'>&#9679;</span> forecast (" + d.history_days + "d avg)</span>" : "")
+    + "</div>" + powerSvg(d, color, colorDim);
+}
+function refreshSolar() {
+  refreshPower("solar", "api/solar/daily", "\u2600\ufe0f Solar production",
+    "#f59e0b", "#64748b", "Wh",
+    "No samples yet: the graph fills in as the MPPT reports power (needs MPPT registers, BL917 or Victron data).");
+}
+function refreshLoad() {
+  refreshPower("load", "api/load/daily", "\u26a1 Current used",
+    "#a78bfa", "#64748b", "Wh",
+    "No samples yet: load current is recorded from Victron or BL917 load output data.");
 }
 refreshSolar();
+refreshLoad();
 setInterval(refreshSolar, 60000);
+setInterval(refreshLoad, 60000);
 </script>
 </body>
 </html>
 """
+
+STATS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Energy stats · Nautilus</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", system-ui, sans-serif;
+         min-height: 100vh; padding: 20px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
+  h1 { font-size: 1.3rem; color: #38bdf8; letter-spacing: .5px; }
+  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid #334155;
+           padding: 5px 10px; border-radius: 8px; background: #1e293b; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+          padding: 18px; margin-bottom: 20px; overflow-x: auto; }
+  .card h2 { font-size: 1.05rem; font-weight: 600; color: #f1f5f9; margin-bottom: 10px; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; }
+  th, td { padding: 7px 12px; text-align: left; border-bottom: 1px solid #334155; }
+  th { color: #64748b; font-size: .7rem; text-transform: uppercase; letter-spacing: .5px; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .pos { color: #f59e0b; } .neg { color: #a78bfa; } .net { color: #34d399; }
+  .bars { display: flex; flex-direction: column; gap: 6px; min-width: 420px; }
+  .brow { display: grid; grid-template-columns: 84px 1fr 84px; align-items: center; gap: 8px;
+          font-size: .78rem; color: #94a3b8; }
+  .track { height: 14px; background: #0f172a; border-radius: 7px; overflow: hidden;
+           display: flex; border: 1px solid #334155; }
+  .seg-solar { background: #f59e0b; } .seg-load { background: #a78bfa; }
+  .note { color: #64748b; font-size: .75rem; margin-top: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#9889; Energy stats</h1>
+  <a class="back" href="./">&#8592; Dashboard</a>
+</header>
+<div class="card">
+  <h2>&#2600;&#65039; Solar production vs &#128506; current used — by month (kWh)</h2>
+  <div class="bars" id="months"></div>
+</div>
+<div class="card">
+  <h2>By year (kWh)</h2>
+  <table id="years"><thead><tr><th>Year</th><th class="num">Produced (solar)</th>
+  <th class="num">Consumed (load)</th><th class="num">Net</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card">
+  <h2>By month (kWh)</h2>
+  <table id="tbl"><thead><tr><th>Month</th><th class="num">Produced</th>
+  <th class="num">Consumed</th><th class="num">Net</th></tr></thead><tbody></tbody></table>
+</div>
+<script>
+function esc(s) { return String(s ?? "\u2014").replace(/[&<>"]/g, c => ({"&":"&#38;","<":"&#60;",">":"&#62;",'"':"&#34;"}[c])); }
+function fmt(k) { return k == null ? "\u2014" : Number(k).toFixed(2); }
+async function load() {
+  let d;
+  try { d = await (await fetch("api/stats/totals")).json(); }
+  catch (e) { document.getElementById("months").innerHTML = "<div class='note'>unavailable</div>"; return; }
+  if (d.error) { document.getElementById("months").innerHTML = "<div class='note'>" + esc(d.error) + "</div>"; return; }
+  const sm = {}, lm = {};
+  (d.solar.monthly || []).forEach(m => sm[m.month] = m.kwh);
+  (d.load.monthly || []).forEach(m => lm[m.month] = m.kwh);
+  const months = [...new Set([...Object.keys(sm), ...Object.keys(lm)])].sort();
+  const maxV = Math.max(0.1, ...months.map(m => Math.max(sm[m] || 0, lm[m] || 0)));
+  document.getElementById("months").innerHTML = months.map(m => {
+    const sv = sm[m] || 0, lv = lm[m] || 0;
+    return "<div class='brow'><span>" + esc(m) + "</span>"
+      + "<div class='track'>"
+      + "<div class='seg-solar' style='width:" + (sv / maxV * 50).toFixed(1) + "%'></div>"
+      + "<div class='seg-load' style='width:" + (lv / maxV * 50).toFixed(1) + "%'></div>"
+      + "</div>"
+      + "<span class='pos'>" + fmt(sv) + " / <span class='neg'>" + fmt(lv) + "</span></span></div>";
+  }).join("") || "<div class='note'>No data yet.</div>";
+  const sy = {}, ly = {};
+  (d.solar.yearly || []).forEach(y => sy[y.year] = y.kwh);
+  (d.load.yearly || []).forEach(y => ly[y.year] = y.kwh);
+  const years = [...new Set([...Object.keys(sy), ...Object.keys(ly)])].sort();
+  document.querySelector("#years tbody").innerHTML = years.map(y => {
+    const sv = sy[y] || 0, lv = ly[y] || 0, net = sv - lv;
+    return "<tr><td>" + esc(y) + "</td><td class='num pos'>" + fmt(sv) + "</td>"
+      + "<td class='num neg'>" + fmt(lv) + "</td>"
+      + "<td class='num net'>" + (net >= 0 ? "+" : "") + fmt(net) + "</td></tr>";
+  }).join("") || "<tr><td colspan='4' class='note'>No data yet.</td></tr>";
+  document.querySelector("#tbl tbody").innerHTML = months.map(m => {
+    const sv = sm[m] || 0, lv = lm[m] || 0, net = sv - lv;
+    return "<tr><td>" + esc(m) + "</td><td class='num pos'>" + fmt(sv) + "</td>"
+      + "<td class='num neg'>" + fmt(lv) + "</td>"
+      + "<td class='num net'>" + (net >= 0 ? "+" : "") + fmt(net) + "</td></tr>";
+  }).join("");
+}
+load();
+</script>
+</body>
+</html>
+"""
+
 
 TRACK_HTML = """<!DOCTYPE html>
 <html lang="en">

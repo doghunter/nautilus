@@ -206,6 +206,34 @@ The `/stats` page shows the cumulative energy accounting:
 Totals come from `/api/stats/totals` (kWh estimated from 60 s samples:
 `sum(watt) × 60 / 3.6M`). Samples persist in `SOLAR_DB`.
 
+## 4e. Settings page and extended adaptive polling
+
+The `/settings` page (Settings tab in the dashboard header) exposes all
+polling parameters with live editing; values apply within one cycle without
+restarting the container. Saves are in-memory runtime overrides: a container
+restart restores the `.env` values ("Reset all" does the same immediately).
+
+| Setting | Range | Purpose |
+|---|---|---|
+| `POLL_SECONDS` | 60–3600 | Main BLE/LTE data poll (solar & load sampling included) |
+| `POLL_SECONDS_NIGHT` | 0–3600 | Reduced poll during the night window (0 = night mode off) |
+| `NIGHT_START` / `NIGHT_END` | 0–23 | Night window, local time |
+| `GPS_POLL_SECONDS` | 60–3600 | GPS cadence while moving |
+| `GATT_POLL_SECONDS` | 60–3600 | BM6 GATT read cadence |
+| `STATIONARY_SPEED_KN` | 0–20 | Stationary threshold for the adaptive GPS skip |
+| `GPS_STATIONARY_INTERVAL` | 30–7200 | GPS interval while stationary |
+| `SOLAR_HISTORY_DAYS` | 1–30 | Days feeding the forecast average |
+
+API: `GET/POST /api/settings` (POST accepts a JSON object with numeric
+values, `null` clears an override). Limits are enforced server-side.
+
+## 4f. Load current source
+
+"Current used" reads the MPPT **load output** (`i_load × v_bat`), i.e. only
+the devices wired to the controller's LOAD terminals. Loads connected
+directly to the battery (e.g. via a 12 V distribution panel) are not visible
+to it; a battery shunt is required to measure total boat consumption.
+
 ## 5. Position history (optional backend)
 
 Valid GPS fixes are POSTed to an external "conticini" management app

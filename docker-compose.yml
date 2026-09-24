@@ -1,7 +1,7 @@
 services:
-  nautilus-telemetry:
+  telemetry:
     build: .
-    container_name: nautilus-telemetry
+    container_name: ${CONTAINER_NAME:-nautilus-telemetry}
     restart: always
     environment:
       - TZ=Europe/Rome
@@ -19,7 +19,12 @@ services:
       - BL917_MAC=${BL917_MAC:-}
       - VICTRON_MAC=${VICTRON_MAC:-}
       - VICTRON_SERIAL=${VICTRON_SERIAL:-}
+      - VICTRON_PUK=${VICTRON_PUK:-}
+      - VICTRON_ADV_KEY=${VICTRON_ADV_KEY:-}
+      - STATIONARY_SPEED_KN=${STATIONARY_SPEED_KN:-0.5}
+      - GPS_STATIONARY_INTERVAL=${GPS_STATIONARY_INTERVAL:-600}
+      - SOLAR_DB=${SOLAR_DB:-data/nautilus.db}
     ports:
-      - "8080:8080"
+      - "${HTTP_PORT:-8080}:8080"
     volumes:
       - ./data:/app/data

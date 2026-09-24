@@ -1286,9 +1286,12 @@ def api_settings_post():
             pass    # 0 = night mode disattivata
         elif not (lo <= num <= hi):
             return jsonify({"error": k + f" must be between {lo} and {hi}"}), 400
-        if num != int(num):
-            return jsonify({"error": k + " must be an integer"}), 400
-        _runtime_cfg[k] = str(int(num))
+        if k != "STATIONARY_SPEED_KN":
+            if num != int(num):
+                return jsonify({"error": k + " must be an integer"}), 400
+            _runtime_cfg[k] = str(int(num))
+        else:
+            _runtime_cfg[k] = str(num)
     log.info("Runtime settings aggiornate: %s", _runtime_cfg)
     return jsonify(_cfg_snapshot())
 

@@ -21,3 +21,5 @@ services:
       - VICTRON_SERIAL=${VICTRON_SERIAL:-}
     ports:
       - "8080:8080"
+    volumes:
+      - ./data:/app/data

@@ -121,6 +121,9 @@ All configuration is via environment variables (see `.env.example`):
 | `BL917_TEMP_OFFSET` | no | Temperature correction in °C (default 0) |
 | `VICTRON_MAC` / `VICTRON_SERIAL` | no | Victron MPPT identifiers |
 | `VICTRON_ADV_KEY` | no | Victron Instant Readout AES key |
+| `STATIONARY_SPEED_KN` | no | Below this speed the boat counts as stationary (default 0.5 kn) |
+| `GPS_STATIONARY_INTERVAL` | no | Seconds between GPS polls while stationary (default 600) |
+| `SOLAR_DB` | no | SQLite file for solar power samples (default `data/nautilus.db`) |
 | `VICTRON_PUK` | no | Victron PUK (for key derivation) |
 
 ## 4. Dashboard
@@ -154,6 +157,38 @@ All configuration is via environment variables (see `.env.example`):
   "version": "…", "last_poll": "15:49:30", "updated": "2026-09-05T15:49:30"
 }
 ```
+
+## 4b. Adaptive GPS reporting
+
+The GPS monitor call to the KNOT is blocking (~15–20 s) and keeps the radio
+busy, which matters on a battery-powered boat. When the last valid fix shows a
+speed below `STATIONARY_SPEED_KN`, the gps loop skips the KNOT call entirely
+until `GPS_STATIONARY_INTERVAL` seconds have passed since that fix; while
+moving it polls at the normal cadence. The current mode is exposed in
+`/api/data` as `gps.report_mode` (`"moving"` / `"stationary"`).
+
+## 4c. Solar production history and forecast
+
+At every poll cycle the app samples the solar power (W) from whichever source
+is available — Victron `solar_power_w`, Power Queen MPPT `watt`, or BL917
+`i_charge × v_bat` — and appends it to a local SQLite database
+(`SOLAR_DB`, default `data/nautilus.db`, table `solar_samples`; mount the
+directory as a volume to persist it).
+
+The dashboard shows a graph of the day's production (30-minute averages) with
+yesterday's curve and a forecast (average of up to 7 previous days with data)
+overlaid; the card header shows the approximate Wh produced today. The data is
+served by `/api/solar/daily`:
+
+```json
+{"today": [[9.5, 12.3], ...], "yesterday": [[...]],
+ "forecast": [[...]] | null, "today_wh": 45.6, "yesterday_wh": 61.2,
+ "history_days": 3}
+```
+
+Note: on boats whose MPPT registers are unreachable (Power Queen behind the
+RouterOS limitation, see §2.2) no samples are recorded until that path or a
+BL917/Victron device provides power data.
 
 ## 5. Position history (optional backend)
 

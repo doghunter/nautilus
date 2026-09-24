@@ -69,6 +69,15 @@ KNOT_LTE_URL = f"http://{KNOT_HOST}/rest/interface/lte/monitor"
 POLL_SECONDS = 60
 GPS_POLL_SECONDS = 120   # il monitor GPS è bloccante (~15-20s): cadenza dedicata
 
+# Intervallo di reporting adattivo: se la barca è ferma (speed < soglia) la
+# costosa chiamata GPS al KNOT viene saltata finché non sono trascorsi
+# GPS_STATIONARY_INTERVAL secondi dall'ultimo fix valido (risparmio consumi).
+STATIONARY_SPEED_KN = float(os.environ.get("STATIONARY_SPEED_KN", "0.5"))
+GPS_STATIONARY_INTERVAL = int(os.environ.get("GPS_STATIONARY_INTERVAL", "600"))
+
+# Storico produzione solare (SQLite locale; dir montata come volume).
+SOLAR_DB = os.environ.get("SOLAR_DB", "data/nautilus.db")
+
 # MAC addresses of the BLE sensors (required)
 BM6_MAC = os.environ.get("BM6_MAC", "").upper()
 MPPT_MAC = os.environ.get("MPPT_MAC", "").upper()
@@ -272,6 +281,105 @@ def save_position(gps):
     except Exception as exc:
         log.warning("Invio posizione a conticini fallito: %s", exc)
         return False
+
+# --------------------------------------------------------------------------
+# Storico produzione solare: campiona la potenza del pannello a ogni poll
+# (60 s) su SQLite locale, la espone via API e costruisce una previsione
+# dalla media delle curve dei giorni precedenti.
+# --------------------------------------------------------------------------
+def _solar_db():
+    import sqlite3
+    d = os.path.dirname(SOLAR_DB)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    con = sqlite3.connect(SOLAR_DB, timeout=10)
+    con.execute("CREATE TABLE IF NOT EXISTS solar_samples ("
+                "ts TEXT NOT NULL, watt REAL NOT NULL, source TEXT)")
+    con.commit()
+    return con
+
+
+def log_solar_sample():
+    """Registra un campione di potenza solare (W) dalla fonte disponibile."""
+    try:
+        watt, source = None, None
+        v = _state.get("victron")
+        if isinstance(v, dict) and v.get("solar_power_w") is not None:
+            watt, source = float(v["solar_power_w"]), "victron"
+        else:
+            m = _state.get("mppt")
+            if isinstance(m, dict):
+                if m.get("watt") is not None:
+                    watt, source = float(m["watt"]), "mppt"
+                elif (m.get("model") == "BL917"
+                      and isinstance(m.get("i_charge"), (int, float))
+                      and isinstance(m.get("v_bat"), (int, float))):
+                    watt, source = round(m["i_charge"] * m["v_bat"], 1), "bl917"
+        if watt is None:
+            return
+        con = _solar_db()
+        con.execute("INSERT INTO solar_samples VALUES (?, ?, ?)",
+                    (datetime.now().isoformat(timespec="seconds"), watt, source))
+        con.commit()
+        con.close()
+    except Exception as exc:
+        log.warning("Solar sample non salvato: %s", exc)
+
+
+def solar_daily():
+    """Curve di produzione: oggi, ieri e previsione (media giorni precedenti).
+
+    Ritorna bucket da 30 minuti: [[ora_decimale, watt_medio], ...].
+    """
+    from datetime import timedelta
+
+    def day_curve(day):
+        rows = con.execute(
+            "SELECT ts, watt FROM solar_samples WHERE ts LIKE ?",
+            (day + "%",)).fetchall()
+        buckets = {}
+        for ts, w in rows:
+            try:
+                idx = int(ts[11:13]) * 2 + (1 if int(ts[14:16]) >= 30 else 0)
+            except (ValueError, IndexError):
+                continue
+            buckets.setdefault(idx, []).append(float(w))
+        return [[round(i / 2, 2), round(sum(v) / len(v), 1)]
+                for i, v in sorted(buckets.items())]
+
+    def curve_wh(curve):
+        # bucket da 30 min: Wh = watt * 0.5 h per bucket
+        return round(sum(w * 0.5 for _, w in curve), 1) if curve else 0.0
+
+    now = datetime.now()
+    con = _solar_db()
+    try:
+        today = day_curve(now.strftime("%Y-%m-%d"))
+        yesterday = day_curve((now - timedelta(days=1)).strftime("%Y-%m-%d"))
+        past = []
+        for k in range(2, 9):
+            c = day_curve((now - timedelta(days=k)).strftime("%Y-%m-%d"))
+            if c:
+                past.append(c)
+        forecast = None
+        if past:
+            bmap = {}
+            for c in past:
+                for h, w in c:
+                    bmap.setdefault(int(round(h * 2)), []).append(w)
+            forecast = [[round(i / 2, 2), round(sum(v) / len(v), 1)]
+                        for i, v in sorted(bmap.items())]
+        return {
+            "today": today,
+            "yesterday": yesterday,
+            "forecast": forecast,
+            "today_wh": curve_wh(today),
+            "yesterday_wh": curve_wh(yesterday),
+            "history_days": len(past),
+        }
+    finally:
+        con.close()
+
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
@@ -612,6 +720,9 @@ def fetch_gps():
                 "fix_time_iso": datetime.now().isoformat(timespec="seconds"),
             }
             _state["gps_ok"] = True
+            _state["gps"]["report_mode"] = (
+                "stationary" if _state["gps"]["speed_kn"] < STATIONARY_SPEED_KN
+                else "moving")
             if save_position(_state["gps"]):
                 log.info("Posizione salvata nello storico: %.6f, %.6f",
                          _state["gps"]["latitude"], _state["gps"]["longitude"])
@@ -624,8 +735,25 @@ def fetch_gps():
 
 
 def gps_loop():
+    """Poll GPS adattivo: da fermo (ultimo fix sotto la soglia di velocità)
+    salta del tutto la chiamata bloccante al KNOT fino a
+    GPS_STATIONARY_INTERVAL secondi dall'ultimo fix; in movimento usa la
+    cadenza normale. Il risparmio sta nel non fare il monitor GPS (~15-20 s
+    di radio accesa) e la POST allo storico."""
+    last_fix_ts = 0.0
     while True:
+        gps = _state.get("gps") or {}
+        stationary = (gps.get("valid")
+                      and (gps.get("speed_kn") or 99) < STATIONARY_SPEED_KN)
+        now = time.time()
+        elapsed = now - last_fix_ts
+        if stationary and elapsed < GPS_STATIONARY_INTERVAL:
+            # resta fermo: ri-controlla ogni 60 s finché non scade l'intervallo
+            time.sleep(min(60, max(5, GPS_STATIONARY_INTERVAL - elapsed)))
+            continue
         fetch_gps()
+        if (_state.get("gps") or {}).get("valid"):
+            last_fix_ts = time.time()
         time.sleep(GPS_POLL_SECONDS)
 
 
@@ -933,6 +1061,7 @@ def fetch_devices():
 def poll_loop():
     while True:
         fetch_devices()
+        log_solar_sample()
         fetch_lte()
         time.sleep(POLL_SECONDS)
 
@@ -946,7 +1075,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.10.0"
+VERSION = "1.11.0"
 
 
 @app.route("/api/data")
@@ -988,6 +1117,18 @@ def api_track_history():
     except Exception as exc:
         log.warning("track-history (proxy conticini): %s", exc)
         return jsonify({"error": "track history unavailable"}), 503
+
+
+@app.route("/api/solar/daily")
+@app.route("/nautilus/api/solar/daily")
+@app.route(URL_PREFIX_ALIAS + "/api/solar/daily")
+def api_solar_daily():
+    """Curve di produzione solare: oggi, ieri e previsione (bucket 30 min)."""
+    try:
+        return jsonify(solar_daily())
+    except Exception as exc:
+        log.warning("solar daily: %s", exc)
+        return jsonify({"error": "solar history unavailable"}), 503
 
 
 @app.route("/track")
@@ -1072,6 +1213,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="card" id="mppt"></div>
   <div class="card" id="gps"></div>
   <div class="card" id="lte"></div>
+  <div class="card" id="solar" style="grid-column: 1 / -1;"></div>
 </div>
 <script>
 function esc(s) { return String(s ?? "—").replace(/[&<>"]/g, c => ({"&":"&"+"#38;","<":"&"+"#60;",">":"&"+"#62;",'"':"&"+"#34;"}[c])); }
@@ -1329,6 +1471,67 @@ window._showMap = function(mode) {
 };
 refresh();
 setInterval(refresh, 5000);
+
+// ---- Solar production graph (today / yesterday / forecast) ----
+function solarPath(curve, x0, y0, w, h, maxW) {
+  if (!curve || !curve.length) return "";
+  return curve.map(p => {
+    const px = x0 + (p[0] / 24) * w;
+    const py = y0 + h - Math.min(p[1], maxW) / maxW * h;
+    return px.toFixed(1) + "," + py.toFixed(1);
+  }).join(" ");
+}
+async function refreshSolar() {
+  const card = document.getElementById("solar");
+  let d;
+  try { d = await (await fetch("api/solar/daily")).json(); }
+  catch (e) {
+    card.innerHTML = "<h2>\u2600\ufe0f Solar production</h2><div class='note'>history unavailable</div>";
+    return;
+  }
+  if (d.error) {
+    card.innerHTML = "<h2>\u2600\ufe0f Solar production</h2><div class='note'>" + esc(d.error) + "</div>";
+    return;
+  }
+  const hasData = (d.today && d.today.length) || (d.yesterday && d.yesterday.length);
+  if (!hasData) {
+    card.innerHTML = "<h2>\u2600\ufe0f Solar production</h2><div class='note'>No samples yet: the graph fills in as the MPPT reports power (needs MPPT registers, BL917 or Victron data).</div>";
+    return;
+  }
+  const W = 720, H = 200, x0 = 34, y0 = 10, gw = W - 44, gh = H - 34;
+  const maxW = Math.max(10, ...((d.today || []).concat(d.yesterday || [], d.forecast || [])).map(p => p[1]));
+  const yticks = [0, maxW / 2, maxW].map(v => Math.round(v));
+  let svg = "<svg viewBox='0 0 " + W + " " + H + "' style='width:100%;height:auto'>";
+  svg += "<line x1='" + x0 + "' y1='" + (y0 + gh) + "' x2='" + (x0 + gw) + "' y2='" + (y0 + gh) + "' stroke='#334155'/>";
+  for (let hh = 0; hh <= 24; hh += 4) {
+    const px = x0 + hh / 24 * gw;
+    svg += "<line x1='" + px + "' y1='" + y0 + "' x2='" + px + "' y2='" + (y0 + gh) + "' stroke='#1e293b'/>";
+    svg += "<text x='" + px + "' y='" + (H - 6) + "' fill='#475569' font-size='10' text-anchor='middle'>" + hh + "h</text>";
+  }
+  yticks.forEach((v, i) => {
+    const py = y0 + gh - (i / (yticks.length - 1)) * gh;
+    svg += "<text x='" + (x0 - 4) + "' y='" + (py + 3) + "' fill='#475569' font-size='10' text-anchor='end'>" + v + "</text>";
+  });
+  svg += "<text x='" + (x0 - 4) + "' y='" + (y0 + 3) + "' fill='#475569' font-size='10' text-anchor='end'>W</text>";
+  if (d.yesterday && d.yesterday.length)
+    svg += "<polyline fill='none' stroke='#64748b' stroke-width='1.5' points='" + solarPath(d.yesterday, x0, y0, gw, gh, maxW) + "'/>";
+  if (d.forecast && d.forecast.length)
+    svg += "<polyline fill='none' stroke='#38bdf8' stroke-width='1.5' stroke-dasharray='5,4' points='" + solarPath(d.forecast, x0, y0, gw, gh, maxW) + "'/>";
+  if (d.today && d.today.length) {
+    const pts = solarPath(d.today, x0, y0, gw, gh, maxW).split(" ");
+    svg += "<polygon fill='rgba(245,158,11,.15)' points='" + (x0 + "," + (y0 + gh) + " " + pts.join(" ") + " " + (x0 + gw) + "," + (y0 + gh)) + "'/>";
+    svg += "<polyline fill='none' stroke='#f59e0b' stroke-width='2' points='" + pts.join(" ") + "'/>";
+  }
+  svg += "</svg>";
+  card.innerHTML = "<h2>\u2600\ufe0f Solar production <span class='chip ok'>\u2248 " + (d.today_wh || 0) + " Wh today</span></h2>"
+    + "<div style='display:flex;gap:14px;font-size:.72rem;color:#94a3b8;margin:4px 0 6px'>"
+    + "<span><span style='color:#f59e0b'>\u25cf</span> today</span>"
+    + (d.yesterday_wh ? "<span><span style='color:#64748b'>\u25cf</span> yesterday (" + d.yesterday_wh + " Wh)</span>" : "")
+    + (d.forecast ? "<span><span style='color:#38bdf8'>\u25cf</span> forecast (" + d.history_days + "d avg)</span>" : "")
+    + "</div>" + svg;
+}
+refreshSolar();
+setInterval(refreshSolar, 60000);
 </script>
 </body>
 </html>

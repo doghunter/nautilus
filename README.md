@@ -25,6 +25,8 @@ per-boat code changes.
 - **Dashboard** — dark theme, 5 s auto-refresh, map with the OpenSeaMap nautical
   overlay, historical track page with date-range filters, clear "no data"
   indicators when a sensor stops transmitting.
+- **Adaptive GPS reporting** — when the boat is stationary the expensive blocking GPS call to the KNOT is skipped (configurable interval), reducing power and data consumption.
+- **Solar production history** — power samples are logged to SQLite and shown as a daily graph (today vs. yesterday) with a forecast built from previous days.
 - **JSON API** — everything available at `/api/data`.
 
 Full documentation: [docs/MANUAL.md](docs/MANUAL.md)

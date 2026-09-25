@@ -1797,7 +1797,7 @@ STATS_HTML = """<!DOCTYPE html>
   <th class="num">Consumed</th><th class="num">Net</th></tr></thead><tbody></tbody></table>
 </div>
 <script>
-function esc(s) { return String(s ?? "\u2014").replace(/[&<>"]/g, c => ({"&":"&#38;","<":"&#60;",">":"&#62;","\u0022":"&#34;"}[c])); }
+function esc(s) { return String(s ?? "\u2014").replace(/[&<>"]/g, c => ({"&":"&#38;","<":"&#60;",">":"&#62;",'"':"&#34;"}[c])); }
 function fmt(k) { return k == null ? "\u2014" : Number(k).toFixed(2); }
 function fmtWh(k) { return k == null ? "\u2014" : Math.round(k * 1000).toLocaleString("en-US") + " Wh"; }
 async function load() {

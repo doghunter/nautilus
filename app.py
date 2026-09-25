@@ -1218,7 +1218,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.14.1"
+VERSION = "1.14.2"
 
 
 @app.route("/api/data")
@@ -1907,7 +1907,7 @@ function monthSvg(curve, color) {
   let p = "";
   curve.forEach(([h, w]) => { p += (p ? " L" : "M") + x(h).toFixed(1) + " " + y(w, MONTH_MAXW).toFixed(1); });
   let g = "<svg viewBox='0 0 " + W + " " + H + "' style='width:100%;height:auto'>";
-  for (let h = 0; h <= 24; h += 6)
+  for (let h = 0; h <= 24; h += 1)
     g += "<line x1='" + x(h) + "' y1='" + P + "' x2='" + x(h) + "' y2='" + (P + ih) + "' stroke='#334155' stroke-width='1'/>"
        + "<text x='" + x(h) + "' y='" + (P + ih + 13) + "' fill='#64748b' font-size='10' text-anchor='middle'>" + h + "h</text>";
   for (let w = 0; w <= MONTH_MAXW; w += MONTH_STEP) {

@@ -1899,8 +1899,9 @@ async function loadCurves() {
   let d;
   try { d = await (await fetch("api/stats/monthly-curve")).json(); }
   catch (e) { return; }
-  if (d.error || !d.months || !d.months.length) return;
+  if (d.error) return;
   const el = document.getElementById("daycurve");
+  if (!d.months || !d.months.length) { el.innerHTML = "<div class='note'>No data yet.</div>"; return; }
   const W = 860, H = 300, P = 46;
   const maxW = Math.max(10, ...d.months.map(m => m.peak_w));
   const iw = W - P - 12, ih = H - P - 30;

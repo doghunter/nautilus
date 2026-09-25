@@ -199,9 +199,9 @@ shown in the dashboard as a "Current used" card next to solar production.
 
 The `/stats` page shows the cumulative energy accounting:
 
-- bar comparison of produced vs consumed kWh per month
-- yearly table (produced, consumed, net)
-- monthly table with net balance
+- bar comparison of produced vs consumed per month, shown in Wh (boat-scale values; a day is a fraction of a kWh)
+- yearly table (produced, consumed, net) in kWh
+- monthly table with net balance (Wh)
 
 Totals come from `/api/stats/totals` (kWh estimated from 60 s samples:
 `sum(watt) × 60 / 3.6M`). Samples persist in `SOLAR_DB`.

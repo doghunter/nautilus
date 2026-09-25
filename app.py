@@ -1179,7 +1179,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.13.0"
+VERSION = "1.13.1"
 
 
 @app.route("/api/data")
@@ -1783,7 +1783,7 @@ STATS_HTML = """<!DOCTYPE html>
   <a class="back" href="./">&#8592; Dashboard</a>
 </header>
 <div class="card">
-  <h2>&#2600;&#65039; Solar production vs &#128506; current used — by month (kWh)</h2>
+  <h2>&#2600;&#65039; Solar production vs &#128506; current used — by month (Wh)</h2>
   <div class="bars" id="months"></div>
 </div>
 <div class="card">
@@ -1792,13 +1792,14 @@ STATS_HTML = """<!DOCTYPE html>
   <th class="num">Consumed (load)</th><th class="num">Net</th></tr></thead><tbody></tbody></table>
 </div>
 <div class="card">
-  <h2>By month (kWh)</h2>
+  <h2>By month (Wh)</h2>
   <table id="tbl"><thead><tr><th>Month</th><th class="num">Produced</th>
   <th class="num">Consumed</th><th class="num">Net</th></tr></thead><tbody></tbody></table>
 </div>
 <script>
-function esc(s) { return String(s ?? "\u2014").replace(/[&<>"]/g, c => ({"&":"&#38;","<":"&#60;",">":"&#62;",'"':"&#34;"}[c])); }
+function esc(s) { return String(s ?? "\u2014").replace(/[&<>"]/g, c => ({"&":"&#38;","<":"&#60;",">":"&#62;","\u0022":"&#34;"}[c])); }
 function fmt(k) { return k == null ? "\u2014" : Number(k).toFixed(2); }
+function fmtWh(k) { return k == null ? "\u2014" : Math.round(k * 1000).toLocaleString("en-US") + " Wh"; }
 async function load() {
   let d;
   try { d = await (await fetch("api/stats/totals")).json(); }
@@ -1816,7 +1817,7 @@ async function load() {
       + "<div class='seg-solar' style='width:" + (sv / maxV * 50).toFixed(1) + "%'></div>"
       + "<div class='seg-load' style='width:" + (lv / maxV * 50).toFixed(1) + "%'></div>"
       + "</div>"
-      + "<span class='pos'>" + fmt(sv) + " / <span class='neg'>" + fmt(lv) + "</span></span></div>";
+      + "<span class='pos'>" + fmtWh(sv) + " / <span class='neg'>" + fmtWh(lv) + "</span></span></div>";
   }).join("") || "<div class='note'>No data yet.</div>";
   const sy = {}, ly = {};
   (d.solar.yearly || []).forEach(y => sy[y.year] = y.kwh);
@@ -1830,9 +1831,9 @@ async function load() {
   }).join("") || "<tr><td colspan='4' class='note'>No data yet.</td></tr>";
   document.querySelector("#tbl tbody").innerHTML = months.map(m => {
     const sv = sm[m] || 0, lv = lm[m] || 0, net = sv - lv;
-    return "<tr><td>" + esc(m) + "</td><td class='num pos'>" + fmt(sv) + "</td>"
-      + "<td class='num neg'>" + fmt(lv) + "</td>"
-      + "<td class='num net'>" + (net >= 0 ? "+" : "") + fmt(net) + "</td></tr>";
+    return "<tr><td>" + esc(m) + "</td><td class='num pos'>" + fmtWh(sv) + "</td>"
+      + "<td class='num neg'>" + fmtWh(lv) + "</td>"
+      + "<td class='num net'>" + (net >= 0 ? "+" : "\u2212") + fmtWh(Math.abs(net)) + "</td></tr>";
   }).join("");
 }
 load();

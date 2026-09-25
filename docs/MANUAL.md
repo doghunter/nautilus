@@ -199,7 +199,7 @@ shown in the dashboard as a "Current used" card next to solar production.
 
 The `/stats` page shows the cumulative energy accounting:
 
-- average solar day per month (30-min slot mean power across the month's days) as an SVG line chart, so the irradiation window can be compared month by month (API: `/api/stats/monthly-curve`)
+- average solar day per month as per-month mini charts (grid under the monthly table), each titled with the month's Wh and peak; same Y scale on every chart so months compare directly (API: `/api/stats/monthly-curve`)
 - bar comparison of produced vs consumed per month, shown in Wh (boat-scale values; a day is a fraction of a kWh)
 - yearly table (produced, consumed, net) in kWh
 - monthly table with net balance (Wh)

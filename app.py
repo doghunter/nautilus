@@ -1218,7 +1218,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.14.0"
+VERSION = "1.14.1"
 
 
 @app.route("/api/data")
@@ -1828,6 +1828,10 @@ STATS_HTML = """<!DOCTYPE html>
   .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: .78rem; color: #94a3b8; }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { width: 18px; height: 4px; border-radius: 2px; display: inline-block; }
+  .mcharts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 14px; }
+  .mchart { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 12px; }
+  .mchart h3 { font-size: .82rem; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .mchart h3 i { width: 14px; height: 4px; border-radius: 2px; display: inline-block; }
 </style>
 </head>
 <body>
@@ -1835,11 +1839,6 @@ STATS_HTML = """<!DOCTYPE html>
   <h1>&#9889; Energy stats</h1>
   <a class="back" href="./">&#8592; Dashboard</a>
 </header>
-<div class="card">
-  <h2>&#9728;&#65039; Average solar day by month (W)</h2>
-  <div id="daycurve"></div>
-  <p class="note">Mean power per 30-min slot across all days of each month — how the irradiation window changes month by month.</p>
-</div>
 <div class="card">
   <h2>&#2600;&#65039; Solar production vs &#128506; current used — by month (Wh)</h2>
   <div class="bars" id="months"></div>
@@ -1853,6 +1852,11 @@ STATS_HTML = """<!DOCTYPE html>
   <h2>By month (Wh)</h2>
   <table id="tbl"><thead><tr><th>Month</th><th class="num">Produced</th>
   <th class="num">Consumed</th><th class="num">Net</th></tr></thead><tbody></tbody></table>
+</div>
+<div class="card">
+  <h2>&#9728;&#65039; Average solar day — per month</h2>
+  <div id="daycurve" class="mcharts"></div>
+  <p class="note">Mean power per 30-min slot across all days of each month (W). Same scale on every chart, so months compare directly.</p>
 </div>
 <script>
 function esc(s) { return String(s ?? "\u2014").replace(/[&<>"]/g, c => ({"&":"&#38;","<":"&#60;",">":"&#62;",'"':"&#34;"}[c])); }
@@ -1895,40 +1899,41 @@ async function load() {
   }).join("");
 }
 const PALETTE = ["#f59e0b","#38bdf8","#a78bfa","#34d399","#f87171","#fbbf24","#7dd3fc","#c084fc"];
+function monthSvg(curve, color) {
+  const W = 420, H = 150, P = 34;
+  const iw = W - P - 8, ih = H - P - 20;
+  const x = h => P + h / 24 * iw;
+  const y = (w, maxW) => P + ih - w / maxW * ih;
+  let p = "";
+  curve.forEach(([h, w]) => { p += (p ? " L" : "M") + x(h).toFixed(1) + " " + y(w, MONTH_MAXW).toFixed(1); });
+  let g = "<svg viewBox='0 0 " + W + " " + H + "' style='width:100%;height:auto'>";
+  for (let h = 0; h <= 24; h += 6)
+    g += "<line x1='" + x(h) + "' y1='" + P + "' x2='" + x(h) + "' y2='" + (P + ih) + "' stroke='#334155' stroke-width='1'/>"
+       + "<text x='" + x(h) + "' y='" + (P + ih + 13) + "' fill='#64748b' font-size='10' text-anchor='middle'>" + h + "h</text>";
+  for (let w = 0; w <= MONTH_MAXW; w += MONTH_STEP) {
+    const wy = Math.round(y(w, MONTH_MAXW) * 10) / 10;
+    g += "<line x1='" + P + "' y1='" + wy + "' x2='" + (P + iw) + "' y2='" + wy + "' stroke='#334155' stroke-width='1'/>"
+       + "<text x='" + (P - 5) + "' y='" + (wy + 3) + "' fill='#64748b' font-size='10' text-anchor='end'>" + w + "</text>";
+  }
+  g += "<path d='" + p + "' fill='none' stroke='" + color + "' stroke-width='2' stroke-linejoin='round'/></svg>";
+  return g;
+}
+let MONTH_MAXW = 10, MONTH_STEP = 5;
 async function loadCurves() {
   let d;
   try { d = await (await fetch("api/stats/monthly-curve")).json(); }
   catch (e) { return; }
-  if (d.error) return;
   const el = document.getElementById("daycurve");
+  if (d.error) return;
   if (!d.months || !d.months.length) { el.innerHTML = "<div class='note'>No data yet.</div>"; return; }
-  const W = 860, H = 300, P = 46;
-  const maxW = Math.max(10, ...d.months.map(m => m.peak_w));
-  const iw = W - P - 12, ih = H - P - 30;
-  const x = h => P + h / 24 * iw;
-  const y = w => P + ih - w / maxW * ih;
-  let g = "<svg viewBox='0 0 " + W + " " + H + "' style='width:100%;height:auto'>";
-  for (let h = 0; h <= 24; h += 3)
-    g += "<line x1='" + x(h) + "' y1='" + P + "' x2='" + x(h) + "' y2='" + (P + ih) + "' stroke='#334155' stroke-width='1'/>"
-       + "<text x='" + x(h) + "' y='" + (P + ih + 16) + "' fill='#64748b' font-size='11' text-anchor='middle'>" + h + "h</text>";
-  for (let w = 0; w <= maxW; w += Math.max(1, Math.round(maxW / 4 / 10) * 10)) {
-    const wy = Math.round(y(w) * 10) / 10;
-    if (wy >= P + ih) break;
-    g += "<line x1='" + P + "' y1='" + wy + "' x2='" + (P + iw) + "' y2='" + wy + "' stroke='#334155' stroke-width='1'/>"
-       + "<text x='" + (P - 6) + "' y='" + (wy + 4) + "' fill='#64748b' font-size='11' text-anchor='end'>" + w + "</text>";
-  }
-  d.months.forEach((m, k) => {
+  MONTH_MAXW = Math.max(10, ...d.months.map(m => m.peak_w));
+  MONTH_STEP = Math.max(5, Math.round(MONTH_MAXW / 3 / 5) * 5);
+  el.innerHTML = d.months.map((m, k) => {
     const c = PALETTE[k % PALETTE.length];
-    let p = "";
-    m.curve.forEach(([h, w]) => { p += (p ? " L" : "M") + x(h).toFixed(1) + " " + y(w).toFixed(1); });
-    g += "<path d='" + p + "' fill='none' stroke='" + c + "' stroke-width='2' stroke-linejoin='round'/>";
-  });
-  g += "</svg><div class='legend'>";
-  d.months.forEach((m, k) => {
-    g += "<span><i style='background:" + PALETTE[k % PALETTE.length] + "'></i>" + esc(m.month) + " (" + m.days + "d)</span>";
-  });
-  g += "</div>";
-  el.innerHTML = g;
+    return "<div class='mchart'><h3><i style='background:" + c + "'></i>" + esc(m.month)
+      + " · " + fmtWh(m.total_wh / 1000) + " (" + m.days + "d, peak " + m.peak_w + " W)</h3>"
+      + monthSvg(m.curve, c) + "</div>";
+  }).join("");
 }
 loadCurves();
 load();

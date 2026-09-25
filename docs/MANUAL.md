@@ -1,5 +1,9 @@
 # Nautilus Telemetry — Manual
 
+![Dashboard](screenshots/dashboard.png)
+
+The dashboard in action on a live deployment (identifying data redacted).
+
 Nautilus is a self-hosted marine telemetry system for sailboats. It collects data
 from onboard BLE sensors and the internal GPS through a MikroTik KNOT router
 (typically connected via WireGuard) and serves everything on a real-time web

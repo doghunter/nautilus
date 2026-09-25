@@ -28,8 +28,20 @@ per-boat code changes.
 - **Adaptive GPS reporting** — when the boat is stationary the expensive blocking GPS call to the KNOT is skipped (configurable interval), reducing power and data consumption.
 - **Solar production history** — power samples are logged to SQLite and shown as a daily graph (today vs. yesterday) with a forecast built from previous days.
 - **Settings page** — all polling intervals (including night mode and the adaptive GPS skip) editable live from the dashboard.
-- **Consumption monitoring** — load current is logged too; a "Current used" graph sits next to solar production, and a `/stats` page totals produced/consumed energy by month and year with the net balance.
+- **Consumption monitoring** — load current is logged too; a "Current used" graph sits next to solar production, and a `/stats` page totals produced/consumed energy by month and year with the net balance, plus per-month average solar day charts to compare the irradiation window month by month.
 - **JSON API** — everything available at `/api/data`.
+
+## Screenshots
+
+| Dashboard | Energy stats |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Energy stats](docs/screenshots/stats.png) |
+
+| Track history | Settings |
+|---|---|
+| ![Track history](docs/screenshots/track.png) | ![Settings](docs/screenshots/settings.png) |
+
+(Screenshots taken from a live deployment; identifying data — MACs, coordinates, map details — redacted.)
 
 Full documentation: [docs/MANUAL.md](docs/MANUAL.md)
 
@@ -51,6 +63,7 @@ The dashboard is then served on port 8080 (default URL prefix `/nautilus`).
 | `docker-compose.yml` | Service with restart: always, port 8080, env passthrough |
 | `.env.example` | All supported configuration variables |
 | `docs/MANUAL.md` | Full manual (architecture, BLE protocols, API, troubleshooting) |
+| `docs/screenshots/` | Anonymized screenshots of dashboard, stats, track and settings pages |
 
 ## Credits
 

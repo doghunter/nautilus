@@ -437,6 +437,45 @@ def _totals():
         con.close()
 
 
+def _monthly_curves():
+    """Curva media giornaliera di produzione per mese (bucket 30 min, W).
+
+    Per ogni mese: media, slot per slot, della potenza mediata su ciascun
+    giorno (cosi' i giorni con piu' campioni non pesano il doppio).
+    """
+    con = _solar_db()
+    try:
+        rows = con.execute(
+            "SELECT ts, watt FROM solar_samples WHERE length(ts)>=16 "
+            "ORDER BY ts").fetchall()
+        per_day = {}
+        days = {}
+        for ts, w in rows:
+            try:
+                idx = int(ts[11:13]) * 2 + (1 if int(ts[14:16]) >= 30 else 0)
+            except (ValueError, IndexError):
+                continue
+            ym, day = ts[:7], ts[:10]
+            per_day.setdefault((ym, day, idx), []).append(float(w))
+            days.setdefault(ym, set()).add(day)
+        day_means = {}
+        for (ym, day, idx), vals in per_day.items():
+            day_means.setdefault(ym, {}).setdefault(idx, []).append(
+                sum(vals) / len(vals))
+        months = []
+        for ym, buckets in sorted(day_means.items()):
+            curve = [[round(i / 2, 2), round(sum(v) / len(v), 1)]
+                     for i, v in sorted(buckets.items())]
+            wh = round(sum(w * 0.5 for _, w in curve), 0)
+            months.append({
+                "month": ym, "days": len(days.get(ym, ())),
+                "peak_w": max(w for _, w in curve),
+                "total_wh": wh, "curve": curve})
+        return {"months": months}
+    finally:
+        con.close()
+
+
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("nautilus-telemetry")
@@ -1179,7 +1218,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.13.1"
+VERSION = "1.14.0"
 
 
 @app.route("/api/data")
@@ -1297,6 +1336,17 @@ def api_settings_post():
 
 
 @app.route("/stats")
+@app.route("/nautilus/api/stats/monthly-curve")
+@app.route(URL_PREFIX_ALIAS + "/api/stats/monthly-curve")
+def api_stats_monthly_curve():
+    """Curve medie giornaliere di produzione solare per mese."""
+    try:
+        return jsonify(_monthly_curves())
+    except Exception as exc:
+        log.warning("stats monthly-curve: %s", exc)
+        return jsonify({"error": "stats unavailable"}), 503
+
+
 @app.route("/nautilus/api/stats/totals")
 @app.route(URL_PREFIX_ALIAS + "/api/stats/totals")
 def api_stats_totals():
@@ -1775,6 +1825,9 @@ STATS_HTML = """<!DOCTYPE html>
            display: flex; border: 1px solid #334155; }
   .seg-solar { background: #f59e0b; } .seg-load { background: #a78bfa; }
   .note { color: #64748b; font-size: .75rem; margin-top: 10px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: .78rem; color: #94a3b8; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 18px; height: 4px; border-radius: 2px; display: inline-block; }
 </style>
 </head>
 <body>
@@ -1782,6 +1835,11 @@ STATS_HTML = """<!DOCTYPE html>
   <h1>&#9889; Energy stats</h1>
   <a class="back" href="./">&#8592; Dashboard</a>
 </header>
+<div class="card">
+  <h2>&#9728;&#65039; Average solar day by month (W)</h2>
+  <div id="daycurve"></div>
+  <p class="note">Mean power per 30-min slot across all days of each month — how the irradiation window changes month by month.</p>
+</div>
 <div class="card">
   <h2>&#2600;&#65039; Solar production vs &#128506; current used — by month (Wh)</h2>
   <div class="bars" id="months"></div>
@@ -1836,6 +1894,42 @@ async function load() {
       + "<td class='num net'>" + (net >= 0 ? "+" : "\u2212") + fmtWh(Math.abs(net)) + "</td></tr>";
   }).join("");
 }
+const PALETTE = ["#f59e0b","#38bdf8","#a78bfa","#34d399","#f87171","#fbbf24","#7dd3fc","#c084fc"];
+async function loadCurves() {
+  let d;
+  try { d = await (await fetch("api/stats/monthly-curve")).json(); }
+  catch (e) { return; }
+  if (d.error || !d.months || !d.months.length) return;
+  const el = document.getElementById("daycurve");
+  const W = 860, H = 300, P = 46;
+  const maxW = Math.max(10, ...d.months.map(m => m.peak_w));
+  const iw = W - P - 12, ih = H - P - 30;
+  const x = h => P + h / 24 * iw;
+  const y = w => P + ih - w / maxW * ih;
+  let g = "<svg viewBox='0 0 " + W + " " + H + "' style='width:100%;height:auto'>";
+  for (let h = 0; h <= 24; h += 3)
+    g += "<line x1='" + x(h) + "' y1='" + P + "' x2='" + x(h) + "' y2='" + (P + ih) + "' stroke='#334155' stroke-width='1'/>"
+       + "<text x='" + x(h) + "' y='" + (P + ih + 16) + "' fill='#64748b' font-size='11' text-anchor='middle'>" + h + "h</text>";
+  for (let w = 0; w <= maxW; w += Math.max(1, Math.round(maxW / 4 / 10) * 10)) {
+    const wy = Math.round(y(w) * 10) / 10;
+    if (wy >= P + ih) break;
+    g += "<line x1='" + P + "' y1='" + wy + "' x2='" + (P + iw) + "' y2='" + wy + "' stroke='#334155' stroke-width='1'/>"
+       + "<text x='" + (P - 6) + "' y='" + (wy + 4) + "' fill='#64748b' font-size='11' text-anchor='end'>" + w + "</text>";
+  }
+  d.months.forEach((m, k) => {
+    const c = PALETTE[k % PALETTE.length];
+    let p = "";
+    m.curve.forEach(([h, w]) => { p += (p ? " L" : "M") + x(h).toFixed(1) + " " + y(w).toFixed(1); });
+    g += "<path d='" + p + "' fill='none' stroke='" + c + "' stroke-width='2' stroke-linejoin='round'/>";
+  });
+  g += "</svg><div class='legend'>";
+  d.months.forEach((m, k) => {
+    g += "<span><i style='background:" + PALETTE[k % PALETTE.length] + "'></i>" + esc(m.month) + " (" + m.days + "d)</span>";
+  });
+  g += "</div>";
+  el.innerHTML = g;
+}
+loadCurves();
 load();
 </script>
 </body>

@@ -1565,7 +1565,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.22.1"
+VERSION = "1.22.2"
 
 
 @app.route("/api/data")
@@ -2708,7 +2708,7 @@ async function loadTrack() {
       }).addTo(trackLayer);
       m.bindTooltip(
         "<b>" + (isFirst ? "Start" : isLast ? "Arrival" : "Point " + (i + 1)) + "</b>" +
-        (buf ? " <span style=\"color:#fb923c\">· no coverage</span>" : "") + "<br>" +
+        (buf ? " <span style='color:#fb923c'>· no coverage</span>" : "") + "<br>" +
         fmtTs(p.timestamp) + "<br>" +
         "Speed: " + (p.speed != null ? p.speed.toFixed(1) + " kn" : "n/a") + "<br>" +
         "Course: " + compass(p.heading),
@@ -2721,7 +2721,7 @@ async function loadTrack() {
       lg.onAdd = function() {
         const d = L.DomUtil.create("div", "legend");
         d.style.cssText = "background:#1e293bE6;padding:8px 12px;border-radius:8px;font-size:.75rem;color:#e2e8f0";
-        d.innerHTML = "<span style=\"color:#38bdf8\">●</span> live · <span style=\"color:#fb923c\">◌</span> recovered (no coverage)";
+        d.innerHTML = "<span style='color:#38bdf8'>●</span> live · <span style='color:#fb923c'>◌</span> recovered (no coverage)";
         return d;
       };
       lg.addTo(map);

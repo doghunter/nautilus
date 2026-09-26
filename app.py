@@ -87,6 +87,8 @@ GPS_STATIONARY_INTERVAL = int(os.environ.get("GPS_STATIONARY_INTERVAL", "600"))
 DATA_BUDGET_MB = float(os.environ.get("DATA_BUDGET_MB", "1000"))
 DATA_USAGE_POLL_SECONDS = int(os.environ.get("DATA_USAGE_POLL_SECONDS", "600"))
 KNOT_WG_URL = f"http://{KNOT_HOST}/rest/interface/wireguard/peers"
+# Eta\u0300 massima dell'handshake WG oltre la quale il tunnel e' considerato giu\u0300
+KNOT_TUNNEL_STALE_S = int(os.environ.get("KNOT_TUNNEL_STALE_S", "180"))
 
 # Storico produzione solare (SQLite locale; dir montata come volume).
 SOLAR_DB = os.environ.get("SOLAR_DB", "data/nautilus.db")
@@ -1304,6 +1306,60 @@ def fetch_lte():
         _state["lte"] = None
 
 
+def fetch_knot_status():
+    """Stato del tunnel WireGuard e del KNOT (per la card "Knot status").
+
+    Legge last-handshake del peer verso il CHR e l'uptime del router:
+    se l'handshake risale a piu' di KNOT_TUNNEL_STALE_S secondi il tunnel e'
+    considerato giu' (allarme in dashboard). Contatori rx/tx e endpoint
+    corrente per la diagnosi remota.
+    """
+    try:
+        r = requests.get(
+            f"http://{KNOT_HOST}/rest/interface/wireguard/peers",
+            auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+            timeout=10,
+        )
+        r.raise_for_status()
+        peers = r.json()
+        if not peers:
+            _state["knot_status"] = None
+            return
+        p = peers[0]
+
+        def _to_secs(s):
+            total = 0
+            for num, unit in re.findall(r"(\d+)([smhdw])", str(s or "")):
+                total += int(num) * {"s": 1, "m": 60, "h": 3600,
+                                     "d": 86400, "w": 604800}[unit]
+            return total
+
+        hs_age = _to_secs(p.get("last-handshake"))
+        r2 = requests.get(
+            f"http://{KNOT_HOST}/rest/system/resource",
+            auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+            timeout=10,
+        )
+        uptime = ""
+        try:
+            uptime = r2.json().get("uptime", "")
+        except Exception:
+            pass
+        _state["knot_status"] = {
+            "handshake_age_s": hs_age,
+            "handshake_raw": p.get("last-handshake", ""),
+            "tunnel_up": hs_age is not None and hs_age <= KNOT_TUNNEL_STALE_S,
+            "stale_after_s": KNOT_TUNNEL_STALE_S,
+            "rx_bytes": int(p.get("rx", 0) or 0),
+            "tx_bytes": int(p.get("tx", 0) or 0),
+            "endpoint": p.get("current-endpoint-address", ""),
+            "uptime": uptime,
+        }
+    except Exception as exc:
+        log.warning("Knot status fallito: %s", exc)
+        _state["knot_status"] = None
+
+
 def fetch_devices():
     """Scarica i peripheral-devices dal KNOT (solo persist=true).
 
@@ -1405,6 +1461,7 @@ def poll_loop():
         log_solar_sample()
         log_load_sample()
         fetch_lte()
+        fetch_knot_status()
         time.sleep(_poll_seconds())
 
 
@@ -1417,7 +1474,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.18.0"
+VERSION = "1.19.0"
 
 
 @app.route("/api/data")
@@ -1736,6 +1793,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="card" id="solar"></div>
   <div class="card" id="load"></div>
   <div class="card" id="data-usage"></div>
+  <div class="card" id="knot-status"></div>
 </div>
 <script>
 function esc(s) { return String(s ?? "—").replace(/[&<>"]/g, c => ({"&":"&"+"#38;","<":"&"+"#60;",">":"&"+"#62;",'"':"&"+"#34;"}[c])); }
@@ -1989,6 +2047,33 @@ async function refresh() {
         <div class="metric"><div class="k">Days sampled</div><div class="v">${du.days_with_data}</div></div>
       </div>
       <div class="foot"><div class="row">WireGuard tunnel counters (SIM traffic) · sampled every __DU_POLL_MIN__ min</div></div>`;
+  }
+
+  // ---- Knot status ----
+  const ks = d.knot_status;
+  const ksEl = document.getElementById("knot-status");
+  if (!ks) {
+    ksEl.innerHTML = "<h2>&#128225; Knot status <span class='chip idle'>n/a</span></h2>" +
+      "<div class='note'>KNOT not reachable — no tunnel data…</div>";
+  } else {
+    const ageMin = ks.handshake_age_s != null ? Math.round(ks.handshake_age_s / 60) : null;
+    const chip = ks.tunnel_up
+      ? "<span class='chip ok'>tunnel up</span>"
+      : "<span class='chip bad'>TUNNEL DOWN</span>";
+    const fmtB = b => b >= 1073741824 ? (b/1073741824).toFixed(1) + " GiB"
+      : b >= 1048576 ? (b/1048576).toFixed(1) + " MiB" : (b/1024).toFixed(0) + " KiB";
+    ksEl.innerHTML = `
+      <h2>&#128225; Knot status ${chip}</h2>
+      <div class="main-val">${ageMin != null ? ageMin : "—"} <small>min since last handshake</small></div>
+      <div class="metrics">
+        <div class="metric"><div class="k">KNOT uptime</div><div class="v" style="font-size:.9rem">${esc(ks.uptime || "—")}</div></div>
+        <div class="metric"><div class="k">Endpoint</div><div class="v" style="font-size:.9rem">${esc(ks.endpoint || "—")}</div></div>
+        <div class="metric"><div class="k">Tunnel rx</div><div class="v">${fmtB(ks.rx_bytes)}</div></div>
+        <div class="metric"><div class="k">Tunnel tx</div><div class="v">${fmtB(ks.tx_bytes)}</div></div>
+      </div>
+      <div class="foot"><div class="row">${ks.tunnel_up
+        ? "Handshake fresh, watchdog idle"
+        : "No handshake for " + (ageMin != null ? ageMin + " min" : "unknown") + " — KNOT-side watchdog should react (LTE reset, then reboot)"}</div></div>`;
   }
 }
 

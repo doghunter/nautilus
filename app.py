@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-nautilus-telemetry — dashboard BLE per sensori inoltrati dal MikroTik KNOT via WireGuard.
+nautilus-telemetry — BLE dashboard for sensors relayed by the MikroTik KNOT over WireGuard.
 
 Supported devices (configured via environment variables, see docs/MANUAL.md):
   * Leagend BM6 battery monitor (BLE advertisements + GATT)
@@ -9,19 +9,19 @@ Supported devices (configured via environment variables, see docs/MANUAL.md):
   * BL917 MPPT via ZhiJinPower cloud (optional)
   * Victron SmartSolar MPPT (encrypted Instant Readout advertisements, optional)
 
-Decodifica basata sui progetti open-source:
+Decoding based on the open-source projects:
   * BM6:  https://github.com/JeffWDH/bm6-battery-monitor
           https://www.tarball.ca/posts/reverse-engineering-the-bm6-ble-battery-monitor/
           https://github.com/Rafciq/BM6 (layout frame real-time)
   * MPPT: https://github.com/rahulthakoor/solarlife-mppt-ble-client
           https://github.com/subDesTagesMitExtraKaese/solarlife-mppt-ble-client
 
-Formati osservati sui frame reali (verificato empiricamente su 3 dispositivi):
+Frame formats observed on real traffic (empirically verified on 3 devices):
 
   BM6 iBeacon (Apple):
     02 01 06 1A FF 4C 00 02 15 <UUID(16)> <major(2 BE)> <minor(2 BE)> <tx@1m>
-    major/minor = ID statici del beacon (funzione "vehicle finder"), NON la tensione:
-    verificato empiricamente (major costante per ore, valore 4428 fisso).
+    major/minor = static beacon IDs ("vehicle finder" feature), NOT the voltage:
+    verified empirically (major constant for hours, fixed value 4428).
 
   BM6 frame cifrato (service data 0xFFF0, 16 byte AES-128-CBC, IV nullo):
     AD "03 02 F0 FF 11 FF" + 16 byte cifrati. Dopo decifratura:
@@ -31,18 +31,18 @@ Formati osservati sui frame reali (verificato empiricamente su 3 dispositivi):
       byte 8      SoC (%)
       byte 9      segno temperatura (00 = +, 01 = −)
       byte 10     stato (00=OK, 01=tensione bassa, 02=in carica, altro=sconosciuto)
-      byte 11-12  tensione BE/100 (non sempre popolata: 0x0000 se assente)
+      bytes 11-12  big-endian voltage/100 (not always populated: 0x0000 when absent)
 
   MPPT BT-PQCC2430 (adv):
     03 03 E0 FF   → servizio UART 0xFFE0 (canale Modbus RTU via BLE GATT)
     09 FF 5A 58 <MAC> 0C   → manufacturer data ("ZX" + MAC)
     0C 09 "BT-PQCC2430"   → nome locale
-    L'advertisement NON contiene i registri Modbus (V_pv/V_bat/I_bat si
-    leggono solo con connessione GATT, che il KNOT non inoltra): il parser
-    Modbus resta attivo con sanity-check nel caso i dati arrivassero.
+    The advertisement does NOT carry the Modbus registers (V_pv/V_bat/I_bat
+    are only readable via a GATT connection, which the KNOT does not relay):
+    the Modbus parser stays active with sanity checks should data arrive.
 
-Dipendenze: solo flask + requests (AES implementato in puro Python).
-Il parser Victron usa pycryptodome (AES-CTR, se disponibile).
+Dependencies: only flask + requests (AES implemented in pure Python).
+The Victron parser uses pycryptodome (AES-CTR, if available).
 """
 
 import base64
@@ -58,7 +58,7 @@ import requests
 from flask import Flask, jsonify, request
 
 # --------------------------------------------------------------------------
-# Configurazione (tutto parametrico via environment, vedi docs/MANUAL.md)
+# Configuration (fully parametric via environment, see docs/MANUAL.md)
 # --------------------------------------------------------------------------
 KNOT_HOST = os.environ.get("KNOT_HOST", "")
 KNOT_USER = os.environ.get("KNOT_USER", "")
@@ -67,30 +67,30 @@ KNOT_URL = f"http://{KNOT_HOST}/rest/iot/bluetooth/peripheral-devices"
 KNOT_GPS_URL = f"http://{KNOT_HOST}/rest/system/gps/monitor"
 KNOT_LTE_URL = f"http://{KNOT_HOST}/rest/interface/lte/monitor"
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
-# Poll ridotto di notte (orario locale; 0 = disattivato, si usa sempre POLL_SECONDS)
+# Reduced night poll (local time; 0 = disabled, POLL_SECONDS is always used)
 NIGHT_START = int(os.environ.get("NIGHT_START", "22"))
 NIGHT_END = int(os.environ.get("NIGHT_END", "7"))
 POLL_SECONDS_NIGHT = int(os.environ.get("POLL_SECONDS_NIGHT", "0"))
-GPS_POLL_SECONDS = 120   # il monitor GPS è bloccante (~15-20s): cadenza dedicata
+GPS_POLL_SECONDS = 120   # the GPS monitor call is blocking (~15-20s): dedicated cadence
 
-# Intervallo di reporting adattivo: se la barca è ferma (speed < soglia) la
-# costosa chiamata GPS al KNOT viene saltata finché non sono trascorsi
-# GPS_STATIONARY_INTERVAL secondi dall'ultimo fix valido (risparmio consumi).
+# Adaptive reporting interval: when the boat is stationary (speed < threshold)
+# the expensive KNOT GPS call is skipped until GPS_STATIONARY_INTERVAL
+# seconds have passed since the last valid fix (power saving).
 STATIONARY_SPEED_KN = float(os.environ.get("STATIONARY_SPEED_KN", "0.5"))
 GPS_STATIONARY_INTERVAL = int(os.environ.get("GPS_STATIONARY_INTERVAL", "600"))
 
-# Consumo dati SIM: budget mensile (MB) e cadenza del campionamento contatori.
-# I contatori WireGuard del KNOT (rx/tx del peer verso il CHR) si leggono via
-# REST; i delta vengono accumulati per giorno nel DB solare (tabella
-# data_usage). Il tunnel trasporta tutta la telemetria, quindi è una buona
-# approssimazione del traffico LTE della SIM.
+# SIM data usage: monthly budget (MB) and counter sampling cadence.
+# The KNOT's WireGuard counters (peer rx/tx towards the relay) are read via
+# REST; deltas are accumulated per day in the solar DB (data_usage
+# table). The tunnel carries all telemetry, so it is a good approximation
+# of the SIM LTE traffic.
 DATA_BUDGET_MB = float(os.environ.get("DATA_BUDGET_MB", "1000"))
 DATA_USAGE_POLL_SECONDS = int(os.environ.get("DATA_USAGE_POLL_SECONDS", "600"))
 KNOT_WG_URL = f"http://{KNOT_HOST}/rest/interface/wireguard/peers"
-# Eta\u0300 massima dell'handshake WG oltre la quale il tunnel e' considerato giu\u0300
+# Max WireGuard handshake age beyond which the tunnel is considered down
 KNOT_TUNNEL_STALE_S = int(os.environ.get("KNOT_TUNNEL_STALE_S", "180"))
 
-# Storico produzione solare (SQLite locale; dir montata come volume).
+# Solar production history (local SQLite; dir mounted as a volume).
 SOLAR_DB = os.environ.get("SOLAR_DB", "data/nautilus.db")
 
 # MAC addresses of the BLE sensors (required)
@@ -101,17 +101,17 @@ MPPT_MAC = os.environ.get("MPPT_MAC", "").upper()
 BM6_KEY = bytes([108, 101, 97, 103, 101, 110, 100, 255, 254, 48, 49, 48, 48, 48, 48, 57])
 BM6_ADV_MARKER = "0302f0ff11ff"   # AD: UUID servizio 0xFFF0 + 0x11 0xFF + blocco AES
 
-MPPT_SERVICE_UART = "0303e0ff"    # AD: lista UUID 16-bit con 0xFFE0 (canale Modbus)
+MPPT_SERVICE_UART = "0303e0ff"    # AD: 16-bit UUID list with 0xFFE0 (Modbus channel)
 
 BM6_STATES = {0: "OK", 1: "Low voltage", 2: "Charging"}
 
-# Stima SoC dalla tensione a riposo (come fa l'app BM6 col profilo batteria).
-# Il SoC interno del firmware BM6 è tarato su batterie auto 12V piombo-acido e
-# riporta valori senza senso su LiFePO4; con BM6_BATTERY_TYPE settato mostriamo
-# anche la stima ricavata dalla tensione. Solo indicativa: in carica/scarica la
-# tensione è spostata rispetto al valore a riposo.
+# Rest-voltage SoC estimate (like the BM6 app does with a battery profile).
+# The BM6 firmware's internal SoC is calibrated for 12V lead-acid car
+# batteries and reports nonsense on LiFePO4; with BM6_BATTERY_TYPE set we
+# also show the voltage-derived estimate. Indicative only: while charging or
+# discharging the voltage is shifted from the rest value.
 BM6_SOC_CURVES = {
-    "lifepo4": [  # (V, SoC%) 12V LiFePO4 a riposo (piatta nel mezzo: stima grossolana)
+"lifepo4": [  # (V, SoC%) 12V LiFePO4 at rest (flat in the middle: rough estimate)
         (14.6, 100), (13.6, 99), (13.4, 95), (13.3, 85), (13.2, 70),
         (13.1, 55), (13.0, 40), (12.9, 30), (12.7, 20), (12.4, 10),
         (12.0, 5), (11.5, 0),
@@ -127,15 +127,15 @@ BM6_SOC_CURVES = {
 }
 BM6_BATTERY_TYPE = os.environ.get("BM6_BATTERY_TYPE", "").lower()
 
-# Correzione temperatura (°C, sommata al valore del sensore): il chip del BM6
-# si auto-riscalda e la sua temperatura interna sta sopra quella ambiente
-# (l'app BM6 applica una calibrazione equivalente). Esempio: -18 per un chip
-# che a 20 °C ambiente legge 38 °C.
+# Temperature correction (deg C, added to the sensor value): the BM6 chip
+# self-heats and its internal temperature sits above ambient (the BM6 app
+# applies an equivalent calibration). Example: -18 for a chip that reads
+# 38 deg C when ambient is 20 deg C.
 BM6_TEMP_OFFSET = float(os.environ.get("BM6_TEMP_OFFSET", "0"))
 
 
 def estimate_soc(voltage, btype=None):
-    """Interpola il SoC dalla tensione a riposo secondo la curva del tipo batteria."""
+    """Interpolates SoC from rest voltage according to the battery-type curve."""
     curve = BM6_SOC_CURVES.get(btype or BM6_BATTERY_TYPE)
     if not curve or voltage is None:
         return None
@@ -147,32 +147,32 @@ def estimate_soc(voltage, btype=None):
             return round(s0 + (s1 - s0) * (voltage - v0) / (v1 - v0))
     return pts[0][1]
 
-# GATT via REST (RouterOS >= 7.12): lettura voltaggio reale dal BM6.
+# GATT via REST (RouterOS >= 7.12): real voltage read from the BM6.
 # Il comando "d15507..." cifrato AES è costante (chiave BM6, IV nullo) —
-# verificato identico a quello usato dal repo JeffWDH e dal post tarball.ca.
+# verified identical to the one used by the JeffWDH repo and the tarball.ca post.
 KNOT_GATT = f"http://{KNOT_HOST}/rest/iot/bluetooth/connections"
 BM6_GATT_CMD = "697ea0b5d54cf024e794772355554114"   # encrypt("d15507" + 00*10)
 GATT_POLL_SECONDS = 120   # cadenza dedicata (connect+read ~15-20s)
 
 # --------------------------------------------------------------------------
-# BL917 MPPT: i dati vivono sul cloud ZhiJinPower (ws://device.gz529.com)
-# e si leggono via websocket usando solo il MAC. Nessun GATT disponibile.
+# BL917 MPPT: data lives on the ZhiJinPower cloud (ws://device.gz529.com)
+# and is read over websocket using only the MAC. No GATT available.
 # --------------------------------------------------------------------------
 BL917_WS = os.environ.get("BL917_WS", "ws://device.gz529.com/")
 BL917_MAC = os.environ.get("BL917_MAC", "")
-BL917_POLL_SECONDS = 300   # 5 min: il cloud è lento, inutile martellarlo
+BL917_POLL_SECONDS = 300   # 5 min: the cloud is slow, no point hammering it
 
-# Correzione temperatura BL917 (°C, sommata al valore dal cloud): come per il
-# BM6, il sensore misura il chip interno, non l'aria. 0 = nessuna correzione.
+# BL917 temperature correction (deg C, added to the cloud value): like the
+# BM6, the sensor measures its own chip, not the air. 0 = no correction.
 BL917_TEMP_OFFSET = float(os.environ.get("BL917_TEMP_OFFSET", "0"))
 
 # --------------------------------------------------------------------------
 # Victron SmartSolar MPPT: dati via advertisement "Instant
 # Readout" cifrati AES-128-CTR. Protocollo: manufacturer data 0x02E1,
 # payload 0x10 <model_id LE16> <readout_type> <iv LE16> <encrypted>.
-# La chiave si legge in VictronConnect (Product Info → Instant Readout
-# Details) oppure va derivata; il primo byte cifrato è un key-check byte
-# (deve coincidere col primo byte della chiave).
+# The key is read from VictronConnect (Product Info -> Instant Readout
+# Details) or must be derived; the first encrypted byte is a key-check byte
+# (it must match the first byte of the key).
 # --------------------------------------------------------------------------
 VICTRON_MAC = os.environ.get("VICTRON_MAC", "").upper()
 VICTRON_ADV_KEY = os.environ.get("VICTRON_ADV_KEY", "").lower()
@@ -189,7 +189,7 @@ VIC_CHARGE_STATES = {0: "Off", 1: "Low power", 2: "Fault", 3: "Bulk",
 
 
 def _victron_ctr_decrypt(key, iv, data):
-    """AES-128-CTR con contatore little-endian (come victron-ble/pycryptodome)."""
+    """AES-128-CTR with little-endian counter (like victron-ble/pycryptodome)."""
     from Crypto.Cipher import AES
     from Crypto.Util import Counter
     ctr = Counter.new(128, initial_value=iv, little_endian=True)
@@ -197,8 +197,8 @@ def _victron_ctr_decrypt(key, iv, data):
 
 
 def _victron_derive_key(serial, puk):
-    """Candidati di derivazione chiave da seriale+PUK (da validare col
-    key-check byte del primo frame: se non matcha, nessuno è corretto)."""
+    """Key-derivation candidates from serial+PUK (to be validated against the
+    first frame's key-check byte: if it does not match, none is correct)."""
     import hashlib
     cands = []
     serial, puk = serial or "", puk or ""
@@ -211,10 +211,10 @@ def _victron_derive_key(serial, puk):
 
 
 def parse_victron(dev, adv_key):
-    """Decodifica l'advertisement Instant Readout di un caricabatterie Victron.
+    """Decodes a Victron solar charger's Instant Readout advertisement.
 
-    Ritorna dict con i dati del solar charger, o con 'error' se la chiave
-    non è valida (key-check byte mismatch).
+    Returns a dict with the charger data, or with 'error' when the key
+    is invalid (key-check byte mismatch).
     """
     out = {
         "model": "SmartSolar", "name": dev.get("name", "Victron"),
@@ -258,7 +258,7 @@ def parse_victron(dev, adv_key):
         "i_charge": _s16(b[4] | (b[5] << 8)) / 10.0,
         "yield_today_wh": (b[6] | (b[7] << 8)) * 10,
         "solar_power_w": b[8] | (b[9] << 8),
-        # 9 bit little-endian a partire dal byte 10
+# 9 bits little-endian starting from byte 10
         "i_load": load9 / 10.0,
         "readout_type": readout_type,
     })
@@ -277,7 +277,7 @@ def _conticini_headers():
 
 
 def save_position(gps):
-    """Invia il fix valido a conticini (che fa la deduplica < 25 m)."""
+    """POSTs the valid fix to conticini (which deduplicates < 25 m)."""
     if not gps or not gps.get("valid") or not INTERNAL_TOKEN:
         return False
     try:
@@ -298,9 +298,9 @@ def save_position(gps):
         return False
 
 # --------------------------------------------------------------------------
-# Storico produzione solare: campiona la potenza del pannello a ogni poll
-# (60 s) su SQLite locale, la espone via API e costruisce una previsione
-# dalla media delle curve dei giorni precedenti.
+# Solar production history: samples panel power at every poll (60 s) into
+# local SQLite, exposes it via API and builds a forecast from the average
+# of previous days curves.
 # --------------------------------------------------------------------------
 def _solar_db():
     import sqlite3
@@ -320,7 +320,7 @@ def _solar_db():
 
 
 def log_solar_sample():
-    """Registra un campione di potenza solare (W) dalla fonte disponibile."""
+    """Logs a solar power sample (W) from the available source."""
     try:
         watt, source = None, None
         v = _state.get("victron")
@@ -347,7 +347,7 @@ def log_solar_sample():
 
 
 def log_load_sample():
-    """Registra un campione di consumo (W): i_load * v_bat dalla fonte disponibile."""
+    """Logs a consumption sample (W): i_load * v_bat from the available source."""
     try:
         watt, source = None, None
         v = _state.get("victron")
@@ -372,17 +372,17 @@ def log_load_sample():
 
 
 # --------------------------------------------------------------------------
-# Consumo dati SIM: contatori WireGuard del KNOT → delta cumulati per giorno
+# SIM data usage: KNOT WireGuard counters -> cumulative per-day deltas
 # --------------------------------------------------------------------------
-_data_usage_last = None    # (rx, tx) dell'ultimo campione valido
+_data_usage_last = None    # (rx, tx) of the last valid sample
 
 
 def log_data_usage():
-    """Campiona i contatori del peer WireGuard del KNOT e accumula il delta.
+    """Samples the KNOT WireGuard peer counters and accumulates the delta.
 
-    I contatori si azzerano al reboot del KNOT: un delta negativo viene
-    ignorato (si riparte dal nuovo valore base). Ogni misura costa una
-    richiesta REST nel tunnel (~1 KB), cadenza DATA_USAGE_POLL_SECONDS.
+    Counters reset on KNOT reboot: a negative delta is discarded (the new
+    value becomes the base). Each sample costs one REST request in the
+    tunnel (~1 KB), at DATA_USAGE_POLL_SECONDS cadence.
     """
     global _data_usage_last
     try:
@@ -422,7 +422,7 @@ def data_usage_loop():
 
 
 def data_usage_summary():
-    """Totale del mese corrente + statistiche per la card dashboard."""
+    """Current-month total + statistics for the dashboard card."""
     try:
         con = _solar_db()
         month = datetime.now().strftime("%Y-%m")
@@ -433,7 +433,7 @@ def data_usage_summary():
         used = sum(r[1] + r[2] for r in rows)
         days = len(rows)
         now = datetime.now()
-        # proiezione a fine mese sulla media dei giorni con dati
+# month-end projection based on the average of days with data
         days_in_month = (datetime(now.year + (now.month == 12),
                                   now.month % 12 + 1, 1) - now).days + 1
         avg_day = used / max(days, 1)
@@ -457,7 +457,7 @@ def data_usage_summary():
 
 
 def _samples_daily(table):
-    """Curve 30-min di una tabella di campioni: oggi, ieri, previsione."""
+    """30-min curves from a sample table: today, yesterday, forecast."""
     from datetime import timedelta
 
     def day_curve(day):
@@ -509,12 +509,12 @@ def solar_daily():
 
 
 def load_daily():
-    """Curve di consumo: oggi, ieri e previsione (bucket 30 min)."""
+    """Consumption curves: today, yesterday and forecast (30-min buckets)."""
     return _samples_daily("load_samples")
 
 
 def _totals():
-    """Totali per mese e per anno di produzione e consumo (kWh)."""
+    """Monthly and yearly totals of production and consumption (kWh)."""
     con = _solar_db()
     try:
         def month_year(table):
@@ -537,10 +537,10 @@ def _totals():
 
 
 def _monthly_curves():
-    """Curva media giornaliera di produzione per mese (bucket 30 min, W).
+    """Average daily production curve per month (30-min buckets, W).
 
-    Per ogni mese: media, slot per slot, della potenza mediata su ciascun
-    giorno (cosi' i giorni con piu' campioni non pesano il doppio).
+    For each month: per-slot mean of each day's average power (so days
+    with more samples do not weigh double).
     """
     con = _solar_db()
     try:
@@ -580,7 +580,7 @@ logging.basicConfig(level=logging.INFO,
 log = logging.getLogger("nautilus-telemetry")
 
 # --------------------------------------------------------------------------
-# AES-128 in puro Python (solo decrypt, per non aggiungere dipendenze)
+# Pure-Python AES-128 (decrypt only, to avoid extra dependencies)
 # --------------------------------------------------------------------------
 _SBOX = bytes.fromhex(
     "637c777bf26b6fc53001672bfed7ab76"
@@ -607,7 +607,7 @@ _RCON = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1B, 0x36]
 
 
 def _gmul(a, b):
-    """Moltiplicazione in GF(2^8) (per InvMixColumns)."""
+    """Multiplication in GF(2^8) (for InvMixColumns)."""
     p = 0
     for _ in range(8):
         if b & 1:
@@ -675,7 +675,7 @@ def _aes_decrypt_block(block, rk):
 
 
 def aes_cbc_decrypt(data, key, iv=b"\x00" * 16):
-    """AES-128-CBC decrypt (senza padding)."""
+    """AES-128-CBC decryption (no padding)."""
     rk = _expand_key(key)
     out = bytearray()
     prev = iv
@@ -691,11 +691,11 @@ def aes_cbc_decrypt(data, key, iv=b"\x00" * 16):
 # Parser BLE
 # --------------------------------------------------------------------------
 def parse_bm6(dev):
-    """Decodifica il dispositivo BM6: iBeacon (voltaggio) + frame cifrato."""
+    """Decodes the BM6 device: iBeacon (voltage) + encrypted frame."""
     out = {
         "name": dev.get("name", "BM6"),
         "mac": dev.get("address", ""),
-        "voltage": None,          # V (da iBeacon major/100)
+        "voltage": None,          # V (from iBeacon major/100)
         "major": None,
         "minor": None,
         "uuid": None,
@@ -703,17 +703,17 @@ def parse_bm6(dev):
         "temperature": None,      # °C (frame cifrato)
         "state_code": None,
         "state": None,            # testo
-        "frame_voltage": None,     # V dal frame cifrato (se popolata)
+"frame_voltage": None,     # V from the encrypted frame (when populated)
         "rssi": dev.get("rssi"),
         "last_seen": (dev.get("last-seen") or "").split(" ")[-1],
         "raw_adv": dev.get("last-data"),
         "frames": [],
     }
 
-    # --- iBeacon: ID beacon ("vehicle finder"), NON la tensione ---
-    # Verificato empiricamente: major costante per ore (4428) e valore impossibile
-    # per una batteria 12V — non e' una misura. La tensione arriva solo dal campo
-    # del frame cifrato (byte 11-12), che spesso vale 0x0000 (non popolato).
+# --- iBeacon: beacon ID ("vehicle finder"), NOT the voltage ---
+# Empirically verified: major constant for hours (4428) and an impossible
+# value for a 12V battery - not a measurement. The voltage only arrives
+# from the encrypted-frame field (bytes 11-12), often 0x0000 (not populated).
     major = dev.get("ibeacon-major")
     if major not in (None, ""):
         try:
@@ -742,7 +742,7 @@ def parse_bm6(dev):
                     b = dec
                     temp = b[7]
                     if temp > 100:
-                        # byte con segno (two's complement, es. 0xF1 → −15 °C)
+# signed byte (two's complement, e.g. 0xF1 -> -15 deg C)
                         temp -= 256
                     elif b[9] == 0x01:
                         # flag di segno negativo (semantica GATT BM6)
@@ -765,19 +765,19 @@ def parse_bm6(dev):
 
 
 def parse_mppt(dev):
-    """Decodifica il MPPT Power Queen/Lumiax (registri Modbus via BLE 0xFFE0).
+    """Decodes the Power Queen/Lumiax MPPT (Modbus registers via BLE 0xFFE0).
 
-    L'advertisement contiene solo servizio 0xFFE0 + nome. I registri Modbus RTU
-    (V_pv, V_bat, I_charge — progetto solarlife-mppt-ble-client) arrivano solo
-    via connessione GATT, che il MikroTik KNON non inoltra: il parser resta
-    attivo con sanity-check nel caso i dati fossero presenti nel payload.
+    The advertisement only carries the 0xFFE0 service + name. The Modbus RTU
+    registers (V_pv, V_bat, I_charge — solarlife-mppt-ble-client project) only
+    arrive via a GATT connection, which the MikroTik KNOT does not relay: the
+    parser stays active with sanity checks should the data be in the payload.
     """
     out = {
         "name": dev.get("name", "MPPT"),
         "mac": dev.get("address", ""),
         "v_pv": None, "v_bat": None, "c_charge": None, "watt": None,
         "adv_name": None,
-        "telemetry": False,       # True se registri Modbus decodificati
+"telemetry": False,       # True if Modbus registers decoded
         "rssi": dev.get("rssi"),
         "last_seen": (dev.get("last-seen") or "").split(" ")[-1],
         "raw": dev.get("last-data"),
@@ -791,7 +791,7 @@ def parse_mppt(dev):
 
     # Nome locale (AD type 09): "BT-PQCC2430"
     p = raw.find("0909")
-    # il nome è preceduto da AD con length; cerca pattern length 0x0C 09
+# the name is preceded by an AD with length; looks for the 0x0C 09 length pattern
     if "0c0942542d5051" in raw:  # 0C 09 "BT-PQ"
         try:
             start = raw.index("0c09") + 4
@@ -800,10 +800,10 @@ def parse_mppt(dev):
         except Exception:
             pass
 
-    # Registri Modbus incapsulati (se un domani presenti nel last-data):
+# Encapsulated Modbus registers (if one day present in last-data):
     # byte 0..1 BE /10 = V_pv, byte 2..3 BE /10 = V_bat, byte 4..5 BE /10 = I_carica.
-    # Il payload Modbus NON inizia con gli AD standard (02 01 06 ...): lo cerchiamo
-    # solo in un blocco esadecimale "nudo" di almeno 6 byte con valori plausibili.
+# The Modbus payload does NOT start with standard AD (02 01 06 ...): we look for it
+# only in a "naked" hex block of at least 6 bytes with plausible values.
     try:
         data = bytes.fromhex(raw)
     except ValueError:
@@ -825,19 +825,19 @@ def parse_mppt(dev):
 
 
 # --------------------------------------------------------------------------
-# Polling del KNOT
+# KNOT polling
 # --------------------------------------------------------------------------
 # Override a runtime (tab Settings):vincolati ai limiti di sicurezza.
-# Da v1.17.0 sono PERSISTENTI: salvati in JSON nel volume ./data e ricaricati
-# all'avvio, così sopravvivono al riavvio del container. "Reset all" nella
-# pagina Settings li azzera (torna ai valori del .env).
+# Since v1.17.0 they are PERSISTENT: saved as JSON in the ./data volume and
+# reloaded at startup, so they survive a container restart. "Reset all" in the
+# Settings page clears them (back to the .env values).
 _runtime_cfg = {}    # es. {"POLL_SECONDS": "120"}
 _RUNTIME_CFG_FILE = os.path.join(os.path.dirname(SOLAR_DB) or ".",
                                  "runtime_settings.json")
 
 
 def _runtime_cfg_load():
-    """Carica gli override persistenti dal volume (se esistono e validi)."""
+    """Loads persistent overrides from the volume (if present and valid)."""
     global _runtime_cfg
     try:
         with open(_RUNTIME_CFG_FILE, "r", encoding="utf-8") as fh:
@@ -853,7 +853,7 @@ def _runtime_cfg_load():
 
 
 def _runtime_cfg_save():
-    """Scrive gli override correnti su disco (silenzioso se fallisce)."""
+    """Writes the current overrides to disk (silent on failure)."""
     try:
         os.makedirs(os.path.dirname(_RUNTIME_CFG_FILE) or ".", exist_ok=True)
         with open(_RUNTIME_CFG_FILE, "w", encoding="utf-8") as fh:
@@ -916,17 +916,17 @@ _state = {
     "gps_ok": False,
     "error": None,
 }
-# Cache MAC→.id dei peripheral del KNOT per i GET per-device (rispetto al dump
-# completo da ~12 KB, un GET singolo porta ~270 byte: 47 volte meno traffico).
-# Si riscopre con il dump completo ogni _BLE_ID_RESCAN secondi (gli .id possono
-# cambiare dopo un reboot del KNOT).
+# MAC->.id cache of the KNOT peripherals for per-device GETs (vs the ~12 KB
+# full dump, a single GET carries ~270 bytes: 47x less traffic).
+# Re-discovered with the full dump every _BLE_ID_RESCAN seconds (ids can
+# change after a KNOT reboot).
 _ble_id_cache = {}
 _ble_id_cache_ts = 0.0
-_BLE_ID_RESCAN = 600    # secondi tra le riscoperte dell'elenco completo
+_BLE_ID_RESCAN = 600    # seconds between full-list re-discoveries
 
 
 def _selected_ble_macs():
-    """MAC selezionati nella pagina Settings (lista = override runtime)."""
+    """MACs selected in the Settings page (list = runtime override)."""
     raw = _runtime_cfg.get("BLE_DEVICES")
     if not raw:
         return None
@@ -948,19 +948,19 @@ def _ble_notes():
                 if v} if isinstance(notes, dict) else {}
     except (ValueError, TypeError):
         return {}
-# Ritenzione valori letti solo da alcuni frame (il KNOT espone l'ultimo adv
-# ricevuto: il BM6 alterna iBeacon e frame cifrato)
+# Retention of values carried only by some frame types (the KNOT exposes the
+# last adv received: the BM6 alternates iBeacon and encrypted frames)
 _bm6_keep = {}
 
 
 def _bm6_retain(parsed):
-    """Mantiene SoC/temperatura/stato dell'ultimo frame cifrato valido."""
+    """Keeps SoC/temperature/state from the last valid encrypted frame."""
     global _bm6_keep
     now = datetime.now().strftime("%H:%M:%S")
     for key in ("soc", "temperature", "state", "state_code", "frame_voltage"):
         kept = _bm6_keep.get(key)
         if kept and kept.get("src") == "gatt":
-            # il GATT è la misura diretta del sensore: l'adv non sovrascrive
+# GATT is the sensor's direct measurement: the adv does not overwrite it
             parsed[key] = kept["value"]
             continue
         v = parsed.get(key)
@@ -970,8 +970,8 @@ def _bm6_retain(parsed):
             parsed[key] = kept["value"]
     if _bm6_keep:
         parsed["cached_fields_seen"] = _bm6_keep.get("soc", {}).get("seen", now)
-    # voltaggio: la lettura GATT (reale) ha la precedenza su tutto;
-    # altrimenti frame cifrato, altrimenti niente (il major NON è la tensione)
+# voltage: the GATT read (real) takes precedence over everything;
+# then the encrypted frame, else nothing (the major is NOT the voltage)
     vg = _bm6_keep.get("voltage_gatt", {}).get("value")
     if vg is not None:
         parsed["voltage"] = vg
@@ -982,9 +982,9 @@ def _bm6_retain(parsed):
     parsed["soc_est"] = estimate_soc(parsed.get("voltage"))
     if parsed.get("temperature") is not None and BM6_TEMP_OFFSET:
         parsed["temperature"] = round(parsed["temperature"] + BM6_TEMP_OFFSET)
-    # segnale BM6: età dell'ultima lettura GATT (None = mai letto).
-    # > 5 min = il sensore non trasmette più (KNOT offline, BM6 spento o
-    # occupato da un'altra connessione BLE).
+# BM6 signal: age of the last GATT read (None = never read).
+# > 5 min = the sensor is no longer transmitting (KNOT offline, BM6 off or
+# busy with another BLE connection).
     seen = _bm6_keep.get("voltage_gatt", {}).get("seen_iso")
     if seen:
         age = (datetime.now() - datetime.fromisoformat(seen)).total_seconds()
@@ -997,7 +997,7 @@ def _bm6_retain(parsed):
 
 
 def fetch_gps():
-    """Legge il GPS del KNOT (comando bloccante: chiamato dal thread dedicato)."""
+    """Reads the KNOT GPS (blocking call: invoked by its dedicated thread)."""
     try:
         r = requests.post(
             KNOT_GPS_URL,
@@ -1020,7 +1020,7 @@ def fetch_gps():
                 "satellites": int(g.get("satellites", "0")),
                 "altitude_m": float(g.get("altitude", "0").split()[0]),
                 "fix_time": fix_dt.split(" ")[-1] if fix_dt else "",
-                # timestamp locale completo per lo storico (ora del container = ora barca)
+# full local timestamp for history (container time = boat time)
                 "fix_time_iso": datetime.now().isoformat(timespec="seconds"),
             }
             _state["gps_ok"] = True
@@ -1039,11 +1039,11 @@ def fetch_gps():
 
 
 def gps_loop():
-    """Poll GPS adattivo: da fermo (ultimo fix sotto la soglia di velocità)
-    salta del tutto la chiamata bloccante al KNOT fino a
-    GPS_STATIONARY_INTERVAL secondi dall'ultimo fix; in movimento usa la
-    cadenza normale. Il risparmio sta nel non fare il monitor GPS (~15-20 s
-    di radio accesa) e la POST allo storico."""
+    """Adaptive GPS polling: while stationary (last fix below the speed
+    threshold) the blocking KNOT call is skipped entirely until
+    GPS_STATIONARY_INTERVAL seconds from the last fix; while moving the
+    normal cadence applies. The saving comes from not running the GPS
+    monitor (~15-20 s of powered radio) nor the history POST."""
     last_fix_ts = 0.0
     while True:
         stationary_speed = _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN)
@@ -1054,7 +1054,7 @@ def gps_loop():
         now = time.time()
         elapsed = now - last_fix_ts
         if stationary and elapsed < stationary_interval:
-            # resta fermo: ri-controlla ogni 60 s finché non scade l'intervallo
+# still stationary: re-check every 60 s until the interval expires
             time.sleep(min(60, max(5, stationary_interval - elapsed)))
             continue
         fetch_gps()
@@ -1078,18 +1078,18 @@ def _gatt_get(path):
 
 
 def fetch_bm6_gatt():
-    """Legge i dati reali dal BM6 via GATT (RouterOS >= 7.12, ruolo central).
+    """Reads real-time data from the BM6 over GATT (RouterOS >= 7.12, central role).
 
-    Mantiene la connessione persistente: il BM6 invia notifiche real-time su
-    fff4 solo finché resta connesso con subscription attiva. Se la connessione
-    esiste già la riusa; al primo giro connect + subscribe + write del comando.
+    Keeps the connection persistent: the BM6 sends real-time notifications on
+    fff4 only while connected with an active subscription. Reuses an existing
+    connection; on the first pass connect + subscribe + write of the command.
     """
     global _bm6_keep
     try:
         conns = _gatt_get("")
         _mac_l = BM6_MAC.lower()
-        # risolve il NOME del peripheral: sulle connessioni
-        # RouterOS il campo name può essere il nome dispositivo, non il MAC
+# resolves the peripheral NAME: on RouterOS
+# connections the name field may be the device name, not the MAC
         r0 = requests.get(KNOT_URL, auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS), timeout=15)
         r0.raise_for_status()
         dev = next((d for d in r0.json()
@@ -1103,14 +1103,14 @@ def fetch_bm6_gatt():
                      or _mac_l in (c.get("pdev") or "").lower()
                      or (dev_name and dev_name in (c.get("name") or "").lower())), None)
         if not conn:
-            # non connesso: connect (alcuni KNOT vogliono il MAC, altri il .id)
+# not connected: connect (some KNOTs want the MAC, others the .id)
             try:
                 _gatt_post("/connect", {"pdev": BM6_MAC})
             except Exception:
                 try:
                     _gatt_post("/connect", {"pdev": dev[".id"]})
                 except Exception:
-                    pass   # già connesso con altro identificativo: riprova il match
+                    pass   # already connected with another identifier: retry the match
             time.sleep(2)
             conns = _gatt_get("")
             conn = next((c for c in conns
@@ -1121,7 +1121,7 @@ def fetch_bm6_gatt():
                 log.warning("GATT: connect BM6 riuscito ma connessione assente")
                 return
         pdev = conn.get("pdev") or conn["name"]
-        # (re)attiva le notifiche e rilancia il comando real-time: idempotente
+# (re)enables notifications and re-issues the real-time command: idempotent
         _gatt_post("/subscribe", {"pdev": pdev, "uuid": "fff4"})
         _gatt_post("/write", {"pdev": pdev, "uuid": "fff3", "data-hex": BM6_GATT_CMD})
         time.sleep(3)
@@ -1130,7 +1130,7 @@ def fetch_bm6_gatt():
         raw.raise_for_status()
         text = raw.content.decode("utf-8", "replace")
         import re as _re
-        # notifiche del BM6 (fff4): decifra, tieni l'ultima valida con voltaggio
+# BM6 notifications (fff4): decrypt, keep the last valid one with voltage
         last = None
         for entry in _re.findall(r"\{[^{}]*\}", text):
             if '"uuid":"fff4"' not in entry:
@@ -1167,10 +1167,10 @@ def fetch_bm6_gatt():
 
 
 def fetch_bl917():
-    """Interroga il cloud ZhiJinPower per i dati del BL917.
+    """Queries the ZhiJinPower cloud for BL917 data.
 
-    Nessuna autenticazione: solo il MAC. Se il controller non è mai stato
-    registrato via app, il cloud risponde con data vuote → 'registered': False.
+    No authentication: only the MAC. If the controller was never registered
+    through the app, the cloud answers with empty data → 'registered': False.
     """
     try:
         import asyncio
@@ -1200,7 +1200,7 @@ def fetch_bl917():
                         "open the ZhiJinPower app once with the controller powered on.",
             }
             return
-        # sanity check sul voltaggio (12 V nominali)
+# voltage sanity check (12 V nominal)
         vbat = data.get("dianya")
         try:
             vbat = float(vbat)
@@ -1242,10 +1242,10 @@ def gatt_loop():
 
 
 def fetch_lte():
-    """Legge la qualità del segnale LTE del KNOT (richiesta rapida, non bloccante).
+    """Reads the KNOT LTE signal quality (fast, non-blocking request).
 
-    Prima recupera l'.id dell'interfaccia LTE (può cambiare dopo un reboot),
-    poi chiede il monitor con i valori RSRP/RSRQ/SINR/RSSI.
+    First fetches the LTE interface .id (it can change after a reboot),
+    then queries the monitor for RSRP/RSRQ/SINR/RSSI values.
     """
     try:
         r = requests.get(
@@ -1307,12 +1307,12 @@ def fetch_lte():
 
 
 def fetch_knot_status():
-    """Stato del tunnel WireGuard e del KNOT (per la card "Knot status").
+    """WireGuard tunnel and KNOT status (for the "Knot status" card).
 
-    Legge last-handshake del peer verso il CHR e l'uptime del router:
-    se l'handshake risale a piu' di KNOT_TUNNEL_STALE_S secondi il tunnel e'
-    considerato giu' (allarme in dashboard). Contatori rx/tx e endpoint
-    corrente per la diagnosi remota.
+    Reads the peer's last-handshake towards the relay and the router uptime:
+    if the handshake is older than KNOT_TUNNEL_STALE_S seconds the tunnel is
+    considered down (dashboard alarm). rx/tx counters and current endpoint
+    for remote diagnostics.
     """
     try:
         r = requests.get(
@@ -1361,18 +1361,18 @@ def fetch_knot_status():
 
 
 def fetch_devices():
-    """Scarica i peripheral-devices dal KNOT (solo persist=true).
+    """Fetches the peripheral devices from the KNOT (persist=true only).
 
-    Con una selezione BLE attiva (pagina Settings) scarica solo i device
-    selezionati via GET per-device (cache MAC→.id, riscoperta periodica),
-    riducendo il traffico del tunnel di ~47 volte rispetto al dump completo.
+    With an active BLE selection (Settings page) it fetches only the selected
+    devices via per-device GETs (MAC->.id cache, periodic re-discovery),
+    cutting the poll's tunnel traffic by ~70% vs the full dump.
     """
     global VICTRON_ADV_KEY, _ble_id_cache, _ble_id_cache_ts
     try:
         selected = _selected_ble_macs()
         devices = None
         if selected:
-            # riscoperta periodica degli .id (cambiano al reboot del KNOT)
+# periodic .id re-discovery (they change on KNOT reboot)
             now = time.time()
             if now - _ble_id_cache_ts > _BLE_ID_RESCAN or \
                     not all(m in _ble_id_cache for m in selected):
@@ -1389,7 +1389,7 @@ def fetch_devices():
             for m in selected:
                 dev_id = _ble_id_cache.get(m)
                 if not dev_id:
-                    continue    # non (più) visto dal KNOT
+                    continue    # not (anymore) seen by the KNOT
                 r = requests.get(
                     f"{KNOT_URL}/{dev_id}",
                     auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
@@ -1397,8 +1397,8 @@ def fetch_devices():
                 )
                 if r.status_code == 200:
                     devices.append(r.json())
-            # i GET per-device non riportano il campo persist: i device
-            # selezionati sono per definizione quelli voluti
+# per-device GETs do not carry the persist field: selected devices
+# are by definition the wanted ones
             by_mac = {d.get("address", "").upper(): d for d in devices}
         else:
             r = requests.get(
@@ -1413,13 +1413,13 @@ def fetch_devices():
             _state["bm6"] = _bm6_retain(parse_bm6(by_mac[BM6_MAC]))
         else:
             _state["bm6"] = None
-        # con BL917 abilitato i dati MPPT arrivano dal thread cloud:
-        # non sovrascriverli col parser BLE (il MAC è lo stesso dispositivo)
+# with BL917 enabled the MPPT data arrives from the cloud thread:
+# do not overwrite it with the BLE parser (same MAC, same device)
         if not BL917_ENABLED:
             _state["mppt"] = parse_mppt(by_mac[MPPT_MAC]) if MPPT_MAC in by_mac else None
         # Victron SmartSolar: advertisement cifrato, decodifica diretta.
-        # Il KNOT potrebbe non averlo in tabella persistente: cerca tra TUTTI i
-        # dispositivi visti quello col marker del manufacturer data 0x02E1.
+# The KNOT may not have it in the persistent table: search ALL seen
+# devices for the 0x02E1 manufacturer-data marker.
         if VICTRON_SERIAL or VICTRON_MAC:
             dev = (by_mac.get(VICTRON_MAC) if VICTRON_MAC else None)
             if dev is None and not selected:
@@ -1430,7 +1430,7 @@ def fetch_devices():
                 parsed = parse_victron(dev, key) if key else {"error": "VICTRON_ADV_KEY not configured"}
                 if parsed.get("error") == "advertisement key mismatch (key-check byte)" \
                         and VICTRON_SERIAL and VICTRON_PUK:
-                    # prova a derivare la chiave da seriale+PUK e blocca quella valida
+# try to derive the key from serial+PUK and lock in the valid one
                     for cand in _victron_derive_key(VICTRON_SERIAL, VICTRON_PUK):
                         try:
                             trial = parse_victron(dev, cand)
@@ -1470,11 +1470,11 @@ def poll_loop():
 # --------------------------------------------------------------------------
 app = Flask(__name__)
 
-# prefisso URL alternativo per la dashboard (default: /nautilus)
+# alternative URL prefix for the dashboard (default: /nautilus)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
-# nome barca mostrato nella dashboard
+# boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.19.0"
+VERSION = "1.20.0"
 
 
 @app.route("/api/data")
@@ -1498,16 +1498,16 @@ def dashboard():
 
 
 # --------------------------------------------------------------------------
-# Rotta storica della barca (posizioni salvate nel DB conticini)
+# Boat track history route (positions stored in the conticini DB)
 # --------------------------------------------------------------------------
 
 @app.route("/api/boat/track-history")
 @app.route("/nautilus/api/boat/track-history")
 @app.route(URL_PREFIX_ALIAS + "/api/boat/track-history")
 def api_track_history():
-    """Cronologia dei punti della barca (proxy verso lo storico in conticini).
+    """Boat track history (proxy to the conticini history backend).
 
-    Filtri: ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD  oppure  ?last=N
+    Filters: ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD  or  ?last=N
     """
     if not INTERNAL_TOKEN:
         return jsonify({"error": "track history not configured (INTERNAL_TOKEN missing)"}), 503
@@ -1536,7 +1536,7 @@ def api_solar_daily():
 @app.route("/nautilus/api/load/daily")
 @app.route(URL_PREFIX_ALIAS + "/api/load/daily")
 def api_load_daily():
-    """Curve di consumo: oggi, ieri e previsione (bucket 30 min)."""
+    """Consumption curves: today, yesterday and forecast (30-min buckets)."""
     try:
         return jsonify(load_daily())
     except Exception as exc:
@@ -1555,10 +1555,10 @@ def api_settings_get():
 @app.route("/nautilus/api/ble/devices")
 @app.route(URL_PREFIX_ALIAS + "/api/ble/devices")
 def api_ble_devices():
-    """Elenco di TUTTI i BLE visti dal KNOT, per la selezione in Settings.
+    """List of ALL BLE devices seen by the KNOT, for the Settings selection.
 
-    Aggiorna anche la cache MAC→.id usata dai GET per-device. Un device
-    compare qui anche se non persistente (è lo scopo della pagina).
+    Also refreshes the MAC->.id cache used by per-device GETs. A device
+    appears here even if not persistent (that is the page's purpose).
     """
     global _ble_id_cache, _ble_id_cache_ts
     try:
@@ -1589,8 +1589,8 @@ def api_ble_devices():
                 "rssi": rssi if rssi != -999 else None,
                 "last_seen": d.get("last-seen", ""),
             })
-        # ordinamento: RSSI discendente (segnale più forte prima), chi non
-        # trasmette più (rssi assente) in fondo, poi per nome
+# sort order: descending RSSI (strongest signal first), devices no longer
+# transmitting (missing rssi) last, then by name
         out.sort(key=lambda x: (-(x["rssi"] if x["rssi"] is not None else -999),
                                 str(x["name"]).lower()))
         return jsonify({"devices": out,
@@ -1603,8 +1603,8 @@ def api_ble_devices():
 @app.route("/nautilus/api/settings", methods=["POST"])
 @app.route(URL_PREFIX_ALIAS + "/api/settings", methods=["POST"])
 def api_settings_post():
-    """Override a runtime dei parametri di poll (tab Settings).
-    Valori fuori dai limiti vengono rifiutati; null azzera l'override."""
+    """Runtime override of poll parameters (Settings tab).
+    Out-of-range values are rejected; null clears the override."""
     body = request.get_json(silent=True) or {}
     limits = {
         "POLL_SECONDS": (60, 3600),
@@ -1619,7 +1619,7 @@ def api_settings_post():
     }
     for k, v in body.items():
         if k == "BLE_NOTES":
-            # note/nomi per MAC: dict {MAC: testo}, null azzera
+# notes/names per MAC: {MAC: text} dict, null clears
             if v is None or v == {}:
                 _runtime_cfg.pop("BLE_NOTES", None)
             elif isinstance(v, dict) and all(isinstance(m, str) for m in v.keys()):
@@ -1675,7 +1675,7 @@ def api_settings_post():
 @app.route("/nautilus/api/stats/monthly-curve")
 @app.route(URL_PREFIX_ALIAS + "/api/stats/monthly-curve")
 def api_stats_monthly_curve():
-    """Curve medie giornaliere di produzione solare per mese."""
+    """Average daily solar production curves per month."""
     try:
         return jsonify(_monthly_curves())
     except Exception as exc:
@@ -1686,7 +1686,7 @@ def api_stats_monthly_curve():
 @app.route("/nautilus/api/stats/totals")
 @app.route(URL_PREFIX_ALIAS + "/api/stats/totals")
 def api_stats_totals():
-    """Totali per mese e anno di produzione e consumo (kWh)."""
+    """Monthly and yearly totals of production and consumption (kWh)."""
     try:
         return jsonify(_totals())
     except Exception as exc:

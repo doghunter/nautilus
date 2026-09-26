@@ -890,6 +890,7 @@ def _cfg_snapshot():
         "GPS_STATIONARY_INTERVAL": max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL)),
         "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
         "BLE_DEVICES": _selected_ble_macs() or [],
+        "BLE_NOTES": _ble_notes(),
     }
 
 
@@ -932,6 +933,19 @@ def _selected_ble_macs():
         return [str(m).upper() for m in macs if m] or None
     except (ValueError, TypeError):
         return None
+
+
+def _ble_notes():
+    """Note/nomi assegnati ai device BLE (dict MAC→testo, persistente)."""
+    raw = _runtime_cfg.get("BLE_NOTES")
+    if not raw:
+        return {}
+    try:
+        notes = json.loads(raw)
+        return {str(k).upper(): str(v)[:40] for k, v in notes.items()
+                if v} if isinstance(notes, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 # Ritenzione valori letti solo da alcuni frame (il KNOT espone l'ultimo adv
 # ricevuto: il BM6 alterna iBeacon e frame cifrato)
 _bm6_keep = {}
@@ -1403,7 +1417,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.17.0"
+VERSION = "1.18.0"
 
 
 @app.route("/api/data")
@@ -1502,16 +1516,26 @@ def api_ble_devices():
                          for d in rows if d.get(".id")}
         _ble_id_cache_ts = time.time()
         out = []
+        notes = _ble_notes()
         for d in rows:
+            mac = d.get("address", "")
+            try:
+                rssi = int(str(d.get("rssi", "-999") or "-999"))
+            except ValueError:
+                rssi = -999
             out.append({
                 "id": d.get(".id"),
-                "mac": d.get("address", ""),
+                "mac": mac,
                 "name": d.get("name", "") or "",
+                "note": notes.get(mac.upper(), ""),
                 "persist": d.get("persist") == "true",
-                "rssi": d.get("rssi"),
+                "rssi": rssi if rssi != -999 else None,
                 "last_seen": d.get("last-seen", ""),
             })
-        out.sort(key=lambda x: (not x["persist"], str(x["name"]).lower()))
+        # ordinamento: RSSI discendente (segnale più forte prima), chi non
+        # trasmette più (rssi assente) in fondo, poi per nome
+        out.sort(key=lambda x: (-(x["rssi"] if x["rssi"] is not None else -999),
+                                str(x["name"]).lower()))
         return jsonify({"devices": out,
                         "selected": _selected_ble_macs() or []})
     except Exception as exc:
@@ -1537,6 +1561,18 @@ def api_settings_post():
         "NIGHT_END": (0, 23),
     }
     for k, v in body.items():
+        if k == "BLE_NOTES":
+            # note/nomi per MAC: dict {MAC: testo}, null azzera
+            if v is None or v == {}:
+                _runtime_cfg.pop("BLE_NOTES", None)
+            elif isinstance(v, dict) and all(isinstance(m, str) for m in v.keys()):
+                _runtime_cfg["BLE_NOTES"] = json.dumps(
+                    {m.upper(): str(t)[:40] for m, t in v.items() if t})
+            else:
+                return jsonify({"error": "BLE_NOTES must be an object MAC-to-note"}), 400
+            log.info("Note BLE aggiornate: %s", _runtime_cfg.get("BLE_NOTES"))
+            _runtime_cfg_save()
+            continue
         if k == "BLE_DEVICES":
             # lista di MAC selezionati; null/[] = nessuna selezione (dump pieno)
             if v is None or (isinstance(v, list) and not v):
@@ -2351,11 +2387,13 @@ async function loadBle() {
     box.innerHTML = d.devices.map(function(dev) {
       const checked = sel.has(dev.mac.toUpperCase()) ? " checked" : "";
       const tag = dev.persist ? " <span style='color:#34d399;font-size:.68rem'>&#9679; persistent</span>" : "";
-      const rssi = dev.rssi != null ? " · " + dev.rssi + " dBm" : "";
+      const rssi = dev.rssi != null ? dev.rssi + " dBm" : "no signal";
       return "<label style='display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #334155;cursor:pointer'>" +
         "<input type='checkbox' class='ble-chk' value='" + dev.mac + "'" + checked + ">" +
         "<span style='flex:1'><b style='font-size:.8rem'>" + (dev.name || "(unnamed)") + "</b>" + tag +
-        "<br><small style='color:#64748b;font-size:.68rem'>" + dev.mac + rssi + "</small></span></label>";
+        "<br><small style='color:#64748b;font-size:.68rem'>" + dev.mac + " · " + rssi + "</small></span>" +
+        "<input type='text' class='ble-note' data-mac='" + dev.mac + "' value='" + String(dev.note || "").replace(/'/g, "&#39;") + "'" +
+        " placeholder='note' maxlength='40' style='width:120px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.75rem'></label>";
     }).join("");
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>KNOT unreachable</p>";
@@ -2364,7 +2402,9 @@ async function loadBle() {
 async function saveBle() {
   const msg = document.getElementById("msg");
   const macs = Array.from(document.querySelectorAll(".ble-chk:checked")).map(c => c.value);
-  const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ BLE_DEVICES: macs }) });
+  const notes = {};
+  document.querySelectorAll(".ble-note").forEach(i => { if (i.value.trim()) notes[i.dataset.mac] = i.value.trim(); });
+  const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ BLE_DEVICES: macs, BLE_NOTES: notes }) });
   if (r.ok) { msg.className = "msg ok"; msg.textContent = macs.length ? "Selection saved: " + macs.length + " device(s) \u2713" : "Selection cleared \u2713"; }
   else { const d = await r.json(); msg.className = "msg err"; msg.textContent = d.error || "error"; }
 }

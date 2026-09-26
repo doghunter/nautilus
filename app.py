@@ -825,8 +825,39 @@ def parse_mppt(dev):
 # --------------------------------------------------------------------------
 # Polling del KNOT
 # --------------------------------------------------------------------------
-# Override a runtime (tab Settings):vincolati ai limiti di sicurezza
+# Override a runtime (tab Settings):vincolati ai limiti di sicurezza.
+# Da v1.17.0 sono PERSISTENTI: salvati in JSON nel volume ./data e ricaricati
+# all'avvio, così sopravvivono al riavvio del container. "Reset all" nella
+# pagina Settings li azzera (torna ai valori del .env).
 _runtime_cfg = {}    # es. {"POLL_SECONDS": "120"}
+_RUNTIME_CFG_FILE = os.path.join(os.path.dirname(SOLAR_DB) or ".",
+                                 "runtime_settings.json")
+
+
+def _runtime_cfg_load():
+    """Carica gli override persistenti dal volume (se esistono e validi)."""
+    global _runtime_cfg
+    try:
+        with open(_RUNTIME_CFG_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            _runtime_cfg = {str(k): str(v) for k, v in data.items()}
+            log.info("Runtime settings caricate da %s: %s",
+                     _RUNTIME_CFG_FILE, sorted(_runtime_cfg))
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.warning("Runtime settings non leggibili (%s): parto dai .env", exc)
+
+
+def _runtime_cfg_save():
+    """Scrive gli override correnti su disco (silenzioso se fallisce)."""
+    try:
+        os.makedirs(os.path.dirname(_RUNTIME_CFG_FILE) or ".", exist_ok=True)
+        with open(_RUNTIME_CFG_FILE, "w", encoding="utf-8") as fh:
+            json.dump(_runtime_cfg, fh, indent=2)
+    except Exception as exc:
+        log.warning("Runtime settings non salvate su disco: %s", exc)
 
 def _cfg(name, default):
     if name in _runtime_cfg:
@@ -1372,7 +1403,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.16.1"
+VERSION = "1.17.0"
 
 
 @app.route("/api/data")
@@ -1520,6 +1551,7 @@ def api_settings_post():
                 return jsonify({"error": "BLE_DEVICES must be a list of MACs"}), 400
             log.info("Selezione BLE aggiornata: %s",
                      _runtime_cfg.get("BLE_DEVICES", "(nessuna)"))
+            _runtime_cfg_save()
             continue
         if k not in limits:
             return jsonify({"error": "unknown setting: " + k}), 400
@@ -1542,6 +1574,7 @@ def api_settings_post():
         else:
             _runtime_cfg[k] = str(num)
     log.info("Runtime settings aggiornate: %s", _runtime_cfg)
+    _runtime_cfg_save()
     return jsonify(_cfg_snapshot())
 
 
@@ -2219,7 +2252,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
 
 <div class="card">
   <h2>Polling intervals</h2>
-  <p class="hint">Runtime overrides (seconds). Changes apply within one cycle, without restarting the container. "Reset all" restores the .env values.</p>
+  <p class="hint">Runtime overrides (seconds). Changes apply within one cycle, without restarting the container, and are saved to disk: they survive a container restart. "Reset all" restores the .env values.</p>
   <div class="row">
     <label>BLE / LTE poll<small>main data poll cycle (solar &amp; load samples included)</small></label>
     <span><input id="POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
@@ -2266,7 +2299,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
 
 <div class="card">
   <h2>BLE devices</h2>
-  <p class="hint">All BLE devices seen by the KNOT. Select only the ones you need: with an active selection the poll fetches just those devices (~70% less tunnel traffic for the BLE poll). Without a selection the poll fetches all persistent devices with a single full scan.</p>
+  <p class="hint">All BLE devices seen by the KNOT. Select only the ones you need: with an active selection the poll fetches just those devices (~70% less tunnel traffic for the BLE poll). The selection is saved on disk and survives restarts. Without a selection the poll fetches all persistent devices with a single full scan.</p>
   <div id="ble-list" style="margin-top:10px">
     <p class="hint" style="margin:0">Loading device list…</p>
   </div>
@@ -2300,9 +2333,10 @@ async function save() {
 }
 async function resetAll() {
   const body = {}; FIELDS.forEach(f => body[f] = null);
+  body["BLE_DEVICES"] = null;
   const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
   const msg = document.getElementById("msg");
-  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Reset to .env values \u2713"; load(); }
+  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Reset to .env values \u2713"; load(); loadBle(); }
   else { msg.className = "msg err"; msg.textContent = "error"; }
 }
 
@@ -2471,6 +2505,7 @@ loadTrack();
 BL917_ENABLED = os.environ.get("BL917_ENABLED", "0") == "1"
 
 if __name__ == "__main__":
+    _runtime_cfg_load()             # override persistenti (Settings)
     fetch_devices()                    # primo giro immediato
     fetch_lte()                         # segnale LTE immediato
     if BL917_ENABLED:                   # MPPT BL917 via cloud

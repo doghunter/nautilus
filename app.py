@@ -858,6 +858,7 @@ def _cfg_snapshot():
         "STATIONARY_SPEED_KN": _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN),
         "GPS_STATIONARY_INTERVAL": max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL)),
         "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
+        "BLE_DEVICES": _selected_ble_macs() or [],
     }
 
 
@@ -881,6 +882,25 @@ _state = {
     "gps_ok": False,
     "error": None,
 }
+# Cache MAC→.id dei peripheral del KNOT per i GET per-device (rispetto al dump
+# completo da ~12 KB, un GET singolo porta ~270 byte: 47 volte meno traffico).
+# Si riscopre con il dump completo ogni _BLE_ID_RESCAN secondi (gli .id possono
+# cambiare dopo un reboot del KNOT).
+_ble_id_cache = {}
+_ble_id_cache_ts = 0.0
+_BLE_ID_RESCAN = 600    # secondi tra le riscoperte dell'elenco completo
+
+
+def _selected_ble_macs():
+    """MAC selezionati nella pagina Settings (lista = override runtime)."""
+    raw = _runtime_cfg.get("BLE_DEVICES")
+    if not raw:
+        return None
+    try:
+        macs = json.loads(raw)
+        return [str(m).upper() for m in macs if m] or None
+    except (ValueError, TypeError):
+        return None
 # Ritenzione valori letti solo da alcuni frame (il KNOT espone l'ultimo adv
 # ricevuto: il BM6 alterna iBeacon e frame cifrato)
 _bm6_keep = {}
@@ -1240,17 +1260,54 @@ def fetch_lte():
 
 
 def fetch_devices():
-    """Scarica i peripheral-devices dal KNOT (solo persist=true)."""
-    global VICTRON_ADV_KEY
+    """Scarica i peripheral-devices dal KNOT (solo persist=true).
+
+    Con una selezione BLE attiva (pagina Settings) scarica solo i device
+    selezionati via GET per-device (cache MAC→.id, riscoperta periodica),
+    riducendo il traffico del tunnel di ~47 volte rispetto al dump completo.
+    """
+    global VICTRON_ADV_KEY, _ble_id_cache, _ble_id_cache_ts
     try:
-        r = requests.get(
-            KNOT_URL,
-            auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
-            timeout=10,
-        )
-        r.raise_for_status()
-        devices = [d for d in r.json() if d.get("persist") == "true"]
-        by_mac = {d.get("address", "").upper(): d for d in devices}
+        selected = _selected_ble_macs()
+        devices = None
+        if selected:
+            # riscoperta periodica degli .id (cambiano al reboot del KNOT)
+            now = time.time()
+            if now - _ble_id_cache_ts > _BLE_ID_RESCAN or \
+                    not all(m in _ble_id_cache for m in selected):
+                r = requests.get(
+                    KNOT_URL,
+                    auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                    timeout=10,
+                )
+                r.raise_for_status()
+                _ble_id_cache = {d.get("address", "").upper(): d[".id"]
+                                 for d in r.json() if d.get(".id")}
+                _ble_id_cache_ts = now
+            devices = []
+            for m in selected:
+                dev_id = _ble_id_cache.get(m)
+                if not dev_id:
+                    continue    # non (più) visto dal KNOT
+                r = requests.get(
+                    f"{KNOT_URL}/{dev_id}",
+                    auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                    timeout=10,
+                )
+                if r.status_code == 200:
+                    devices.append(r.json())
+            # i GET per-device non riportano il campo persist: i device
+            # selezionati sono per definizione quelli voluti
+            by_mac = {d.get("address", "").upper(): d for d in devices}
+        else:
+            r = requests.get(
+                KNOT_URL,
+                auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                timeout=10,
+            )
+            r.raise_for_status()
+            devices = [d for d in r.json() if d.get("persist") == "true"]
+            by_mac = {d.get("address", "").upper(): d for d in devices}
         if BM6_MAC in by_mac:
             _state["bm6"] = _bm6_retain(parse_bm6(by_mac[BM6_MAC]))
         else:
@@ -1264,7 +1321,7 @@ def fetch_devices():
         # dispositivi visti quello col marker del manufacturer data 0x02E1.
         if VICTRON_SERIAL or VICTRON_MAC:
             dev = (by_mac.get(VICTRON_MAC) if VICTRON_MAC else None)
-            if dev is None:
+            if dev is None and not selected:
                 dev = next((d for d in r.json()
                             if VICTRON_MARKER in (d.get("last-data") or "").lower()), None)
             if dev:
@@ -1315,7 +1372,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.15.0"
+VERSION = "1.16.0"
 
 
 @app.route("/api/data")
@@ -1392,6 +1449,44 @@ def api_settings_get():
     return jsonify(_cfg_snapshot())
 
 
+@app.route("/api/ble/devices")
+@app.route("/nautilus/api/ble/devices")
+@app.route(URL_PREFIX_ALIAS + "/api/ble/devices")
+def api_ble_devices():
+    """Elenco di TUTTI i BLE visti dal KNOT, per la selezione in Settings.
+
+    Aggiorna anche la cache MAC→.id usata dai GET per-device. Un device
+    compare qui anche se non persistente (è lo scopo della pagina).
+    """
+    global _ble_id_cache, _ble_id_cache_ts
+    try:
+        r = requests.get(
+            KNOT_URL,
+            auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+            timeout=10,
+        )
+        r.raise_for_status()
+        rows = r.json()
+        _ble_id_cache = {d.get("address", "").upper(): d[".id"]
+                         for d in rows if d.get(".id")}
+        _ble_id_cache_ts = time.time()
+        out = []
+        for d in rows:
+            out.append({
+                "id": d.get(".id"),
+                "mac": d.get("address", ""),
+                "name": d.get("name", "") or "",
+                "persist": d.get("persist") == "true",
+                "rssi": d.get("rssi"),
+                "last_seen": d.get("last-seen", ""),
+            })
+        out.sort(key=lambda x: (not x["persist"], str(x["name"]).lower()))
+        return jsonify({"devices": out,
+                        "selected": _selected_ble_macs() or []})
+    except Exception as exc:
+        return jsonify({"error": "KNOT unreachable: %s" % exc}), 503
+
+
 @app.route("/api/settings", methods=["POST"])
 @app.route("/nautilus/api/settings", methods=["POST"])
 @app.route(URL_PREFIX_ALIAS + "/api/settings", methods=["POST"])
@@ -1411,6 +1506,21 @@ def api_settings_post():
         "NIGHT_END": (0, 23),
     }
     for k, v in body.items():
+        if k == "BLE_DEVICES":
+            # lista di MAC selezionati; null/[] = nessuna selezione (dump pieno)
+            if v is None or (isinstance(v, list) and not v):
+                _runtime_cfg.pop("BLE_DEVICES", None)
+            elif isinstance(v, list) and all(isinstance(m, str) for m in v) and v:
+                import re as _re
+                if not all(_re.fullmatch(r"[0-9A-Fa-f:]{2,20}", m) for m in v):
+                    return jsonify({"error": "BLE_DEVICES: invalid MAC"}), 400
+                _runtime_cfg["BLE_DEVICES"] = json.dumps(
+                    [m.upper() for m in v])
+            else:
+                return jsonify({"error": "BLE_DEVICES must be a list of MACs"}), 400
+            log.info("Selezione BLE aggiornata: %s",
+                     _runtime_cfg.get("BLE_DEVICES", "(nessuna)"))
+            continue
         if k not in limits:
             return jsonify({"error": "unknown setting: " + k}), 400
         if v is None:
@@ -2154,6 +2264,16 @@ SETTINGS_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<div class="card">
+  <h2>BLE devices</h2>
+  <p class="hint">All BLE devices seen by the KNOT. Select only the ones you need: with an active selection the poll fetches just those devices (about 47x less tunnel traffic than the full scan). Without a selection the poll fetches all persistent devices.</p>
+  <div id="ble-list" style="margin-top:10px">
+    <p class="hint" style="margin:0">Loading device list…</p>
+  </div>
+  <button class="btn" style="margin-top:12px" onclick="saveBle()">Save selection</button>
+  <button class="btn reset" style="margin-top:12px" onclick="clearBle()">Clear selection</button>
+</div>
+
 <button class="btn" onclick="save()">Save</button>
 <button class="btn reset" onclick="resetAll()">Reset all</button>
 <div class="msg" id="msg"></div>
@@ -2185,7 +2305,43 @@ async function resetAll() {
   if (r.ok) { msg.className = "msg ok"; msg.textContent = "Reset to .env values \u2713"; load(); }
   else { msg.className = "msg err"; msg.textContent = "error"; }
 }
+
+// ---- BLE device selection ----
+async function loadBle() {
+  const box = document.getElementById("ble-list");
+  try {
+    const d = await (await fetch("api/ble/devices")).json();
+    if (d.error) { box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>" + d.error + "</p>"; return; }
+    const sel = new Set(d.selected || []);
+    if (!d.devices.length) { box.innerHTML = "<p class='hint' style='margin:0'>No BLE devices seen by the KNOT yet.</p>"; return; }
+    box.innerHTML = d.devices.map(function(dev) {
+      const checked = sel.has(dev.mac.toUpperCase()) ? " checked" : "";
+      const tag = dev.persist ? " <span style='color:#34d399;font-size:.68rem'>&#9679; persistent</span>" : "";
+      const rssi = dev.rssi != null ? " · " + dev.rssi + " dBm" : "";
+      return "<label style='display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #334155;cursor:pointer'>" +
+        "<input type='checkbox' class='ble-chk' value='" + dev.mac + "'" + checked + ">" +
+        "<span style='flex:1'><b style='font-size:.8rem'>" + (dev.name || "(unnamed)") + "</b>" + tag +
+        "<br><small style='color:#64748b;font-size:.68rem'>" + dev.mac + rssi + "</small></span></label>";
+    }).join("");
+  } catch (e) {
+    box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>KNOT unreachable</p>";
+  }
+}
+async function saveBle() {
+  const msg = document.getElementById("msg");
+  const macs = Array.from(document.querySelectorAll(".ble-chk:checked")).map(c => c.value);
+  const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ BLE_DEVICES: macs }) });
+  if (r.ok) { msg.className = "msg ok"; msg.textContent = macs.length ? "Selection saved: " + macs.length + " device(s) \u2713" : "Selection cleared \u2713"; }
+  else { const d = await r.json(); msg.className = "msg err"; msg.textContent = d.error || "error"; }
+}
+async function clearBle() {
+  const msg = document.getElementById("msg");
+  const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ BLE_DEVICES: null }) });
+  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Selection cleared \u2713"; loadBle(); }
+  else { msg.className = "msg err"; msg.textContent = "error"; }
+}
 load();
+loadBle();
 </script>
 </body>
 </html>

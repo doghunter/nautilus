@@ -137,15 +137,22 @@ All configuration is via environment variables (see `.env.example`):
 The Settings page lists **all BLE devices seen by the KNOT** (not only the
 persistent ones). Selecting a subset and saving changes the main poll: with
 an active selection the app fetches only those devices with per-device REST
-GETs (`/rest/iot/bluetooth/peripheral-devices/<id>`, ~270 bytes each instead
-of the ~12 KB full scan — about 47x less tunnel traffic). The device `.id`s
-are cached and re-discovered every 10 minutes (they change after a KNOT
-reboot). "Clear selection" restores the default behaviour (full scan,
-persistent devices only). The selection is a runtime override like the other
-Settings values: it does not survive a container restart. The listing
-endpoint is `GET /api/ble/devices`; the selection is saved via
-`POST /api/settings` with `{"BLE_DEVICES": ["MAC", ...]}` (or `null` to
-clear).
+GETs (`/rest/iot/bluetooth/peripheral-devices/<id>`, ~70% less tunnel traffic
+for the BLE poll). The device `.id`s are cached and re-discovered every 10
+minutes (they change after a KNOT reboot). "Clear selection" restores the
+default behaviour (full scan, persistent devices only). The listing endpoint
+is `GET /api/ble/devices`; the selection is saved via `POST /api/settings`
+with `{"BLE_DEVICES": ["MAC", ...]}` (or `null` to clear).
+
+### Persistent settings (v1.17.0)
+
+Every value saved in the Settings page — polling intervals, GPS/GATT
+overrides, night window, forecast days and the BLE device selection — is
+written to `data/runtime_settings.json` (in the mounted `./data` volume,
+next to the SQLite history) and reloaded at startup, so **settings survive a
+container restart and an image rebuild**. "Reset all" in the Settings page
+clears every override (including the BLE selection) and restores the `.env`
+values.
 
 ## 4. Dashboard
 

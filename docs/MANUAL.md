@@ -132,6 +132,21 @@ All configuration is via environment variables (see `.env.example`):
 | `DATA_BUDGET_MB` | no | Monthly SIM data budget in MB for the usage card (default 1000) |
 | `DATA_USAGE_POLL_SECONDS` | no | WireGuard counter sampling interval (default 600 s) |
 
+### BLE device selection (Settings page)
+
+The Settings page lists **all BLE devices seen by the KNOT** (not only the
+persistent ones). Selecting a subset and saving changes the main poll: with
+an active selection the app fetches only those devices with per-device REST
+GETs (`/rest/iot/bluetooth/peripheral-devices/<id>`, ~270 bytes each instead
+of the ~12 KB full scan — about 47x less tunnel traffic). The device `.id`s
+are cached and re-discovered every 10 minutes (they change after a KNOT
+reboot). "Clear selection" restores the default behaviour (full scan,
+persistent devices only). The selection is a runtime override like the other
+Settings values: it does not survive a container restart. The listing
+endpoint is `GET /api/ble/devices`; the selection is saved via
+`POST /api/settings` with `{"BLE_DEVICES": ["MAC", ...]}` (or `null` to
+clear).
+
 ## 4. Dashboard
 
 - Dark theme, responsive, auto-refresh every 5 s, boat name in the header

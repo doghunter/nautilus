@@ -158,6 +158,16 @@ container restart and an image rebuild**. "Reset all" in the Settings page
 clears every override (including the BLE selection) and restores the `.env`
 values.
 
+### Knot status card (v1.19.0)
+
+The dashboard shows a **Knot status** card with the age of the WireGuard
+tunnel's last handshake (green "tunnel up" while under
+`KNOT_TUNNEL_STALE_S`, default 180 s, otherwise a red "TUNNEL DOWN" alarm),
+the KNOT's uptime, the relay endpoint and the tunnel's rx/tx byte counters.
+When the KNOT itself is unreachable the card says so explicitly. This pairs
+with the KNOT-side watchdog script (ping CHR → LTE reset → reboot): the card
+tells you from shore whether the watchdog should be reacting.
+
 ## 4. Dashboard
 
 - Dark theme, responsive, auto-refresh every 5 s, boat name in the header

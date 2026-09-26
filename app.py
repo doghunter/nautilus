@@ -344,7 +344,7 @@ def replay_gps_buffer():
     points = []
     for row in rows:
         msg = row.get("message", "")
-        if not msg.startswith("gpsbuf|"):
+        if not msg.startswith("GBUF|"):
             continue
         ts = _parse_gpsbuf_time(row.get("time", ""))
         if ts is None:

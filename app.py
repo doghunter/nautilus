@@ -79,6 +79,15 @@ GPS_POLL_SECONDS = 120   # il monitor GPS è bloccante (~15-20s): cadenza dedica
 STATIONARY_SPEED_KN = float(os.environ.get("STATIONARY_SPEED_KN", "0.5"))
 GPS_STATIONARY_INTERVAL = int(os.environ.get("GPS_STATIONARY_INTERVAL", "600"))
 
+# Consumo dati SIM: budget mensile (MB) e cadenza del campionamento contatori.
+# I contatori WireGuard del KNOT (rx/tx del peer verso il CHR) si leggono via
+# REST; i delta vengono accumulati per giorno nel DB solare (tabella
+# data_usage). Il tunnel trasporta tutta la telemetria, quindi è una buona
+# approssimazione del traffico LTE della SIM.
+DATA_BUDGET_MB = float(os.environ.get("DATA_BUDGET_MB", "1000"))
+DATA_USAGE_POLL_SECONDS = int(os.environ.get("DATA_USAGE_POLL_SECONDS", "600"))
+KNOT_WG_URL = f"http://{KNOT_HOST}/rest/interface/wireguard/peers"
+
 # Storico produzione solare (SQLite locale; dir montata come volume).
 SOLAR_DB = os.environ.get("SOLAR_DB", "data/nautilus.db")
 
@@ -301,6 +310,9 @@ def _solar_db():
                 "ts TEXT NOT NULL, watt REAL NOT NULL, source TEXT)")
     con.execute("CREATE TABLE IF NOT EXISTS load_samples ("
                 "ts TEXT NOT NULL, watt REAL NOT NULL, source TEXT)")
+    con.execute("CREATE TABLE IF NOT EXISTS data_usage ("
+                "day TEXT NOT NULL PRIMARY KEY, rx INTEGER NOT NULL, "
+                "tx INTEGER NOT NULL)")
     con.commit()
     return con
 
@@ -355,6 +367,91 @@ def log_load_sample():
         con.close()
     except Exception as exc:
         log.warning("Load sample non salvato: %s", exc)
+
+
+# --------------------------------------------------------------------------
+# Consumo dati SIM: contatori WireGuard del KNOT → delta cumulati per giorno
+# --------------------------------------------------------------------------
+_data_usage_last = None    # (rx, tx) dell'ultimo campione valido
+
+
+def log_data_usage():
+    """Campiona i contatori del peer WireGuard del KNOT e accumula il delta.
+
+    I contatori si azzerano al reboot del KNOT: un delta negativo viene
+    ignorato (si riparte dal nuovo valore base). Ogni misura costa una
+    richiesta REST nel tunnel (~1 KB), cadenza DATA_USAGE_POLL_SECONDS.
+    """
+    global _data_usage_last
+    try:
+        r = requests.get(KNOT_WG_URL,
+                         auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                         timeout=10)
+        r.raise_for_status()
+        peers = r.json()
+        if not peers:
+            _state["data_usage"] = None
+            return
+        rx, tx = int(peers[0].get("rx", 0)), int(peers[0].get("tx", 0))
+        last = _data_usage_last
+        _data_usage_last = (rx, tx)
+        if last is not None:
+            d_rx, d_tx = rx - last[0], tx - last[1]
+            if d_rx < 0 or d_tx < 0:
+                # contatori azzerati (reboot KNOT): ribasamento, nessun delta
+                return
+            con = _solar_db()
+            today = datetime.now().strftime("%Y-%m-%d")
+            con.execute("UPDATE data_usage SET rx = rx + ?, tx = tx + ? "
+                        "WHERE day = ?", (d_rx, d_tx, today))
+            if con.total_changes == 0:
+                con.execute("INSERT INTO data_usage VALUES (?, ?, ?)",
+                            (today, d_rx, d_tx))
+            con.commit()
+            con.close()
+    except Exception as exc:
+        log.warning("Data usage sample fallito: %s", exc)
+
+
+def data_usage_loop():
+    while True:
+        log_data_usage()
+        time.sleep(DATA_USAGE_POLL_SECONDS)
+
+
+def data_usage_summary():
+    """Totale del mese corrente + statistiche per la card dashboard."""
+    try:
+        con = _solar_db()
+        month = datetime.now().strftime("%Y-%m")
+        rows = con.execute("SELECT day, rx, tx FROM data_usage "
+                           "WHERE day LIKE ? ORDER BY day", (month + "%",)).fetchall()
+        con.close()
+        budget = DATA_BUDGET_MB * 1024 * 1024
+        used = sum(r[1] + r[2] for r in rows)
+        days = len(rows)
+        now = datetime.now()
+        # proiezione a fine mese sulla media dei giorni con dati
+        days_in_month = (datetime(now.year + (now.month == 12),
+                                  now.month % 12 + 1, 1) - now).days + 1
+        avg_day = used / max(days, 1)
+        projected = avg_day * days_in_month
+        pct = 100 * used / budget if budget else 0
+        alert_class = ("bad" if pct >= 90 else
+                       "warn" if pct >= 75 else "ok")
+        return {
+            "used_bytes": used,
+            "used_mb": round(used / (1024 * 1024), 1),
+            "budget_mb": DATA_BUDGET_MB,
+            "pct": round(pct, 1),
+            "alert_class": alert_class,
+            "days_with_data": days,
+            "avg_mb_day": round(avg_day / (1024 * 1024), 1),
+            "projected_mb": round(projected / (1024 * 1024), 1),
+        }
+    except Exception as exc:
+        log.warning("Data usage summary fallito: %s", exc)
+        return None
 
 
 def _samples_daily(table):
@@ -1218,7 +1315,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.14.3"
+VERSION = "1.15.0"
 
 
 @app.route("/api/data")
@@ -1226,6 +1323,7 @@ VERSION = "1.14.3"
 @app.route(URL_PREFIX_ALIAS + "/api/data")
 def api_data():
     _state["version"] = VERSION
+    _state["data_usage"] = data_usage_summary()
     return jsonify(_state)
 
 
@@ -1235,7 +1333,9 @@ def api_data():
 @app.route(URL_PREFIX_ALIAS + "/")
 @app.route(URL_PREFIX_ALIAS)
 def dashboard():
-    return DASHBOARD_HTML.replace("{{BOAT}}", BOAT_NAME)
+    return (DASHBOARD_HTML
+            .replace("{{BOAT}}", BOAT_NAME)
+            .replace("__DU_POLL_MIN__", str(max(1, DATA_USAGE_POLL_SECONDS // 60))))
 
 
 # --------------------------------------------------------------------------
@@ -1456,6 +1556,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <div class="card" id="lte"></div>
   <div class="card" id="solar"></div>
   <div class="card" id="load"></div>
+  <div class="card" id="data-usage"></div>
 </div>
 <script>
 function esc(s) { return String(s ?? "—").replace(/[&<>"]/g, c => ({"&":"&"+"#38;","<":"&"+"#60;",">":"&"+"#62;",'"':"&"+"#34;"}[c])); }
@@ -1687,6 +1788,28 @@ async function refresh() {
         <div class="metric"><div class="k">Session</div><div class="v" style="font-size:.9rem">${esc(l.session_uptime)}</div></div>
       </div>
       <div class="foot"><div class="row">Cell ID: ${esc(l.cellid)} · ${esc(l.band_detail)}</div></div>`;
+  }
+
+  // ---- Data usage (SIM) ----
+  const du = d.data_usage;
+  const duEl = document.getElementById("data-usage");
+  if (!du) {
+    duEl.innerHTML = "<h2>📶 Data usage <span class='chip idle'>n/a</span></h2>" +
+      "<div class='note'>No data yet — counters start after the first samples…</div>";
+  } else {
+    const bar = Math.min(100, du.pct);
+    duEl.innerHTML = `
+      <h2>📶 Data usage <span class="chip ${du.alert_class}">${du.pct}% of budget</span></h2>
+      <div class="main-val">${du.used_mb} <small>MB of ${du.budget_mb} MB this month</small></div>
+      <div style="background:#334155;border-radius:6px;height:10px;margin:10px 0">
+        <div style="background:${du.alert_class === "ok" ? "#38bdf8" : du.alert_class === "warn" ? "#f59e0b" : "#ef4444"};border-radius:6px;height:10px;width:${bar}%"></div>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="k">Avg / day</div><div class="v">${du.avg_mb_day} MB</div></div>
+        <div class="metric"><div class="k">Projected month-end</div><div class="v">${du.projected_mb} MB</div></div>
+        <div class="metric"><div class="k">Days sampled</div><div class="v">${du.days_with_data}</div></div>
+      </div>
+      <div class="foot"><div class="row">WireGuard tunnel counters (SIM traffic) · sampled every __DU_POLL_MIN__ min</div></div>`;
   }
 }
 
@@ -2198,6 +2321,7 @@ if __name__ == "__main__":
         fetch_bl917()
         threading.Thread(target=bl917_loop, daemon=True).start()
     threading.Thread(target=poll_loop, daemon=True).start()
+    threading.Thread(target=data_usage_loop, daemon=True).start()
     threading.Thread(target=gps_loop, daemon=True).start()
     threading.Thread(target=gatt_loop, daemon=True).start()
     log.info("nautilus-telemetry in ascolto su :8080 (poll KNOT ogni %ds)", POLL_SECONDS)

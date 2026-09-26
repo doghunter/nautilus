@@ -129,6 +129,8 @@ All configuration is via environment variables (see `.env.example`):
 | `GPS_STATIONARY_INTERVAL` | no | Seconds between GPS polls while stationary (default 600) |
 | `SOLAR_DB` | no | SQLite file for solar power samples (default `data/nautilus.db`) |
 | `VICTRON_PUK` | no | Victron PUK (for key derivation) |
+| `DATA_BUDGET_MB` | no | Monthly SIM data budget in MB for the usage card (default 1000) |
+| `DATA_USAGE_POLL_SECONDS` | no | WireGuard counter sampling interval (default 600 s) |
 
 ## 4. Dashboard
 
@@ -238,6 +240,20 @@ values, `null` clears an override). Limits are enforced server-side.
 the devices wired to the controller's LOAD terminals. Loads connected
 directly to the battery (e.g. via a 12 V distribution panel) are not visible
 to it; a battery shunt is required to measure total boat consumption.
+
+## 4g. SIM data usage
+
+The **Data usage** card estimates the SIM's monthly LTE traffic: the app
+samples the KNOT's WireGuard peer counters (`rx`/`tx` of the tunnel to the
+relay) every `DATA_USAGE_POLL_SECONDS` seconds and accumulates the deltas
+per day in the `data_usage` table of the same SQLite DB as the solar
+history. The card shows the month-to-date total against the
+`DATA_BUDGET_MB` budget (progress bar turns amber at 75 %, red at 90 %),
+plus the daily average and a month-end projection. Counter resets (KNOT
+reboot) are detected and only add up positive deltas. The tunnel carries
+all telemetry traffic, so it is a close approximation of the SIM's data
+consumption; traffic the router itself generates outside the tunnel
+(RouterOS updates, DDNS) is not counted.
 
 ## 5. Position history (optional backend)
 

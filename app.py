@@ -276,26 +276,114 @@ def _conticini_headers():
     return {"X-Internal-Token": INTERNAL_TOKEN, "Content-Type": "application/json"}
 
 
-def save_position(gps):
-    """POSTs the valid fix to conticini (which deduplicates < 25 m)."""
+def save_position(gps, buffered=False):
+    """POSTs the valid fix to conticini (which deduplicates < 25 m).
+
+    buffered=True marks a point replayed from the KNOT-side gps buffer
+    (recorded while offline, e.g. out of LTE coverage while sailing):
+    conticini stores it with source='buffer' so the track page can render
+    it in a different color.
+    """
     if not gps or not gps.get("valid") or not INTERNAL_TOKEN:
         return False
     try:
+        payload = {"timestamp": gps.get("fix_time_iso"),
+                   "latitude": gps["latitude"],
+                   "longitude": gps["longitude"],
+                   "speed": gps.get("speed_kn"),
+                   "heading": gps.get("true_bearing"),
+                   "satellites": gps.get("satellites"),
+                   "altitude_m": gps.get("altitude_m")}
+        if buffered:
+            payload["source"] = "buffer"
         r = requests.post(CONTICINI_BASE + "/internal/boat/position",
                           headers=_conticini_headers(),
-                          json={"timestamp": gps.get("fix_time_iso"),
-                                "latitude": gps["latitude"],
-                                "longitude": gps["longitude"],
-                                "speed": gps.get("speed_kn"),
-                                "heading": gps.get("true_bearing"),
-                                "satellites": gps.get("satellites"),
-                                "altitude_m": gps.get("altitude_m")},
+                          json=payload,
                           timeout=10)
         r.raise_for_status()
         return r.json().get("saved", False)
     except Exception as exc:
-        log.warning("Invio posizione a conticini fallito: %s", exc)
+        log.warning("Position POST to conticini failed: %s", exc)
         return False
+
+# --------------------------------------------------------------------------
+# KNOT-side GPS buffer replay (points recorded while offline, e.g. sailing
+# out of LTE coverage). The KNOT gps-buffer script appends one log line
+# "gpsbuf|lat|lon|speed|bearing|sats|date time" every 5 minutes; when the
+# tunnel comes back this replay reads the log via REST and POSTs the missing
+# points to conticini with source='buffer' (different color on the track).
+# --------------------------------------------------------------------------
+_gpsbuf_last_ts = None    # newest gpsbuf line already replayed (log .id time)
+
+
+def _parse_gpsbuf_time(t):
+    """Parses '2026-09-26 18:29:58' (log time, KNOT local) into a datetime."""
+    try:
+        return datetime.strptime(t.strip(), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def replay_gps_buffer():
+    """Reads gpsbuf lines from the KNOT log and replays the new ones.
+
+    Called from the poll loop only when the tunnel is up; remembers the
+    newest replayed timestamp so each line is sent exactly once (conticini
+    deduplicates < 25 m anyway, this avoids re-reading old lines).
+    """
+    global _gpsbuf_last_ts
+    try:
+        r = requests.get(f"http://{KNOT_HOST}/rest/log",
+                        auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                        timeout=10)
+        r.raise_for_status()
+        rows = r.json()
+    except Exception as exc:
+        log.warning("GPS buffer read failed: %s", exc)
+        return
+    points = []
+    for row in rows:
+        msg = row.get("message", "")
+        if not msg.startswith("gpsbuf|"):
+            continue
+        ts = _parse_gpsbuf_time(row.get("time", ""))
+        if ts is None:
+            continue
+        if _gpsbuf_last_ts is not None and ts <= _gpsbuf_last_ts:
+            continue
+        parts = msg.split("|")
+        if len(parts) < 7:
+            continue
+        try:
+            lat = float(parts[1])
+            lon = float(parts[2])
+            speed_kmh = float(parts[3].split()[0])
+            bearing = float(parts[4].split()[0])
+            sats = int(parts[5])
+        except (ValueError, IndexError):
+            continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            continue
+        points.append((ts, lat, lon, speed_kmh, bearing, sats))
+    if not points:
+        return
+    points.sort(key=lambda p: p[0])
+    sent = 0
+    for ts, lat, lon, speed_kmh, bearing, sats in points:
+        gps = {"valid": True,
+               "latitude": lat,
+               "longitude": lon,
+               "speed_kn": round(speed_kmh / 1.852, 2),
+               "true_bearing": bearing,
+               "satellites": sats,
+               "altitude_m": None,
+               "fix_time_iso": ts.isoformat()}
+        if save_position(gps, buffered=True):
+            sent += 1
+    _gpsbuf_last_ts = points[-1][0]
+    if sent:
+        log.info("GPS buffer replay: %d point(s) recovered into the track", sent)
+
 
 # --------------------------------------------------------------------------
 # Solar production history: samples panel power at every poll (60 s) into
@@ -1462,6 +1550,9 @@ def poll_loop():
         log_load_sample()
         fetch_lte()
         fetch_knot_status()
+        # replay KNOT-side buffered GPS points only when the tunnel is alive
+        if (_state.get("knot_status") or {}).get("tunnel_up"):
+            replay_gps_buffer()
         time.sleep(_poll_seconds())
 
 
@@ -1474,7 +1565,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.21.0"
+VERSION = "1.22.0"
 
 
 @app.route("/api/data")

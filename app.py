@@ -1565,7 +1565,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.22.0"
+VERSION = "1.22.1"
 
 
 @app.route("/api/data")
@@ -2699,19 +2699,33 @@ async function loadTrack() {
     L.polyline(latlngs, { color: "#38bdf8", weight: 3, opacity: .85 }).addTo(trackLayer);
     pts.forEach((p, i) => {
       const isFirst = i === 0, isLast = i === pts.length - 1;
+      const buf = p.source === "buffer";
       const m = L.circleMarker([p.latitude, p.longitude], {
-        radius: isFirst || isLast ? 6 : 3.5,
-        color: isFirst ? "#22c55e" : isLast ? "#f59e0b" : "#38bdf8",
-        weight: 2, fillOpacity: .9
+        radius: isFirst || isLast ? 6 : (buf ? 4.5 : 3.5),
+        color: isFirst ? "#22c55e" : isLast ? "#f59e0b" : buf ? "#fb923c" : "#38bdf8",
+        weight: 2, fillOpacity: .9,
+        dashArray: buf ? "3,3" : null
       }).addTo(trackLayer);
       m.bindTooltip(
-        "<b>" + (isFirst ? "Start" : isLast ? "Arrival" : "Point " + (i + 1)) + "</b><br>" +
+        "<b>" + (isFirst ? "Start" : isLast ? "Arrival" : "Point " + (i + 1)) + "</b>" +
+        (buf ? " <span style=\"color:#fb923c\">· no coverage</span>" : "") + "<br>" +
         fmtTs(p.timestamp) + "<br>" +
         "Speed: " + (p.speed != null ? p.speed.toFixed(1) + " kn" : "n/a") + "<br>" +
         "Course: " + compass(p.heading),
         { direction: "top", offset: [-2, -6] }
       );
     });
+    // legend when buffered points are present
+    if (pts.some(p => p.source === "buffer")) {
+      const lg = L.control({ position: "bottomright" });
+      lg.onAdd = function() {
+        const d = L.DomUtil.create("div", "legend");
+        d.style.cssText = "background:#1e293bE6;padding:8px 12px;border-radius:8px;font-size:.75rem;color:#e2e8f0";
+        d.innerHTML = "<span style=\"color:#38bdf8\">●</span> live · <span style=\"color:#fb923c\">◌</span> recovered (no coverage)";
+        return d;
+      };
+      lg.addTo(map);
+    }
     map.fitBounds(L.latLngBounds(latlngs).pad(0.15));
   } catch (e) {
     summary.textContent = "endpoint unreachable";

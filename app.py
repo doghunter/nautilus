@@ -1372,7 +1372,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # nome barca mostrato nella dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.16.0"
+VERSION = "1.16.1"
 
 
 @app.route("/api/data")
@@ -2266,7 +2266,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
 
 <div class="card">
   <h2>BLE devices</h2>
-  <p class="hint">All BLE devices seen by the KNOT. Select only the ones you need: with an active selection the poll fetches just those devices (about 47x less tunnel traffic than the full scan). Without a selection the poll fetches all persistent devices.</p>
+  <p class="hint">All BLE devices seen by the KNOT. Select only the ones you need: with an active selection the poll fetches just those devices (~70% less tunnel traffic for the BLE poll). Without a selection the poll fetches all persistent devices with a single full scan.</p>
   <div id="ble-list" style="margin-top:10px">
     <p class="hint" style="margin:0">Loading device list…</p>
   </div>

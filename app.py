@@ -1474,7 +1474,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.20.0"
+VERSION = "1.21.0"
 
 
 @app.route("/api/data")
@@ -1951,6 +1951,7 @@ async function refresh() {
   } else {
     const lat = g.latitude, lon = g.longitude;
     const gmaps = "https://maps.google.com/?q=" + lat + "," + lon;
+    const gearth = "https://earth.google.com/web/search/" + lat + "," + lon;
     if (!window._nautilusInit) {
       // primo rendering: costruisco la card una volta sola, la mappa resta viva
       window._nautilusInit = true;
@@ -1973,7 +1974,10 @@ async function refresh() {
           <iframe id="gmap-frame" loading="lazy" style="display:none"
             src="about:blank"></iframe>
         </div>
-        <a class="gmaps-link" id="gmaps-link" href="${gmaps}" target="_blank" rel="noopener">Open in Google Maps ↗</a>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <a class="gmaps-link" id="gmaps-link" href="${gmaps}" target="_blank" rel="noopener">Open in Google Maps ↗</a>
+          <a class="gmaps-link" id="gearth-link" href="${gearth}" target="_blank" rel="noopener">Open in Google Earth 3D ↗</a>
+        </div>
         <div class="foot"><div class="row">GPS fix at <span id="gps-fixtime">${esc(g.fix_time)}</span> (KNOT time)</div></div>`;
       window._nautilusMap = L.map("map", { zoomControl: true });
       // base OpenStreetMap + overlay nautico OpenSeaMap (seamarks: boe, fari, secche…)
@@ -2000,6 +2004,7 @@ async function refresh() {
       document.getElementById("gps-alt").textContent = g.altitude_m.toFixed(0) + " m";
       document.getElementById("gps-fixtime").textContent = g.fix_time || "—";
       document.getElementById("gmaps-link").href = gmaps;
+      document.getElementById("gearth-link").href = gearth;
       window._nautilusBoat.setLatLng([lat, lon]);
       if (window._nautilusFollow) window._nautilusMap.panTo([lat, lon]);
     }

@@ -141,8 +141,12 @@ GETs (`/rest/iot/bluetooth/peripheral-devices/<id>`, ~70% less tunnel traffic
 for the BLE poll). The device `.id`s are cached and re-discovered every 10
 minutes (they change after a KNOT reboot). "Clear selection" restores the
 default behaviour (full scan, persistent devices only). The listing endpoint
-is `GET /api/ble/devices`; the selection is saved via `POST /api/settings`
-with `{"BLE_DEVICES": ["MAC", ...]}` (or `null` to clear).
+is `GET /api/ble/devices` (sorted by RSSI, strongest first, with the saved
+notes); the selection and notes are saved via `POST /api/settings`
+with `{"BLE_DEVICES": ["MAC", ...]}` and `{"BLE_NOTES": {"MAC": "text"}}`
+(or `null` to clear). Notes are stored app-side (they work with a read-only
+REST user); the KNOT's own `persist` flag and device `name` can only be
+changed by an admin user on the router.
 
 ### Persistent settings (v1.17.0)
 

@@ -72,6 +72,7 @@ NIGHT_START = int(os.environ.get("NIGHT_START", "22"))
 NIGHT_END = int(os.environ.get("NIGHT_END", "7"))
 POLL_SECONDS_NIGHT = int(os.environ.get("POLL_SECONDS_NIGHT", "0"))
 GPS_POLL_SECONDS = 120   # the GPS monitor call is blocking (~15-20s): dedicated cadence
+GPSBUF_POLL_SECONDS = int(os.environ.get("GPSBUF_POLL_SECONDS", "900"))
 
 # Adaptive reporting interval: when the boat is stationary (speed < threshold)
 # the expensive KNOT GPS call is skipped until GPS_STATIONARY_INTERVAL
@@ -92,6 +93,9 @@ KNOT_TUNNEL_STALE_S = int(os.environ.get("KNOT_TUNNEL_STALE_S", "180"))
 
 # Solar production history (local SQLite; dir mounted as a volume).
 SOLAR_DB = os.environ.get("SOLAR_DB", "data/nautilus.db")
+# Server-side archive of the GBUF lines recovered from the KNOT log
+GPSBUF_ARCHIVE = os.path.join(os.path.dirname(SOLAR_DB) or "data",
+                              "gpsbuf-archive.log")
 
 # MAC addresses of the BLE sensors (required)
 BM6_MAC = os.environ.get("BM6_MAC", "").upper()
@@ -419,8 +423,15 @@ def save_position(gps, buffered=False):
 # "gpsbuf|lat|lon|speed|bearing|sats|date time" every 5 minutes; when the
 # tunnel comes back this replay reads the log via REST and POSTs the missing
 # points to conticini with source='buffer' (different color on the track).
+# The log download is throttled (GPSBUF_POLL_SECONDS) because the log grows
+# with every REST login; every read is archived on the server (raw JSON +
+# GBUF lines in data/). RouterOS 7 cannot clear /log, so the KNOTs are
+# configured with a small memory ring buffer (memory-lines=300) and the
+# account topic silenced to keep the log GBUF-only.
 # --------------------------------------------------------------------------
 _gpsbuf_last_ts = None    # newest gpsbuf line already replayed (log .id time)
+_gpsbuf_last_fetch = None # last successful /rest/log download (unix time)
+_knot_tunnel_was_up = None  # previous poll's tunnel state (gap detection)
 
 
 def _parse_gpsbuf_time(t):
@@ -431,48 +442,80 @@ def _parse_gpsbuf_time(t):
         return None
 
 
-def replay_gps_buffer():
-    """Reads gpsbuf lines from the KNOT log and replays the new ones.
+def replay_gps_buffer(force=False):
+    """Reads GBUF lines from the KNOT log and replays the new ones.
 
-    Called from the poll loop only when the tunnel is up; remembers the
-    newest replayed timestamp so each line is sent exactly once (conticini
-    deduplicates < 25 m anyway, this avoids re-reading old lines).
+    The full log download is expensive (it grows with every REST login) so it
+    is throttled: it happens on the GPSBUF_POLL_SECONDS cadence, or right
+    away after a coverage gap (tunnel was down), or when forced. Every read
+    is archived on the server (raw JSON + GBUF lines in data/) before the
+    KNOT's ring buffer scrolls on.
     """
-    global _gpsbuf_last_ts
+    global _gpsbuf_last_ts, _gpsbuf_last_fetch
+    now = time.time()
+    if not force:
+        interval = max(60, _cfg("GPSBUF_POLL_SECONDS", GPSBUF_POLL_SECONDS))
+        if _gpsbuf_last_fetch is not None and now - _gpsbuf_last_fetch < interval:
+            return
     try:
         r = requests.get(f"http://{KNOT_HOST}/rest/log",
                         auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
-                        timeout=10)
+                        timeout=30)
         r.raise_for_status()
         rows = r.json()
+        _gpsbuf_last_fetch = now
     except Exception as exc:
         log.warning("GPS buffer read failed: %s", exc)
         return
     points = []
-    for row in rows:
-        msg = row.get("message", "")
-        if not msg.startswith("GBUF|"):
-            continue
-        ts = _parse_gpsbuf_time(row.get("time", ""))
-        if ts is None:
-            continue
-        if _gpsbuf_last_ts is not None and ts <= _gpsbuf_last_ts:
-            continue
-        parts = msg.split("|")
-        if len(parts) < 7:
-            continue
-        try:
-            lat = float(parts[1])
-            lon = float(parts[2])
-            speed_kmh = float(parts[3].split()[0])
-            bearing = float(parts[4].split()[0])
-            sats = int(parts[5])
-        except (ValueError, IndexError):
-            continue
-        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            continue
-        points.append((ts, lat, lon, speed_kmh, bearing, sats))
+    archived = 0
+    # keep the full downloaded log on the server (the KNOT one is cleared)
+    try:
+        os.makedirs(os.path.dirname(GPSBUF_ARCHIVE), exist_ok=True)
+        rawdir = os.path.join(os.path.dirname(GPSBUF_ARCHIVE), "knot-log-archive")
+        os.makedirs(rawdir, exist_ok=True)
+        with open(os.path.join(rawdir,
+                              datetime.now().strftime("%Y%m%d-%H%M%S") + ".json"),
+                  "w") as rf:
+            json.dump(rows, rf)
+    except Exception as exc:
+        log.warning("KNOT log raw archive failed: %s", exc)
+    with open(GPSBUF_ARCHIVE, "a") as af:
+        for row in rows:
+            msg = row.get("message", "")
+            if not msg.startswith("GBUF|"):
+                continue
+            ts = _parse_gpsbuf_time(row.get("time", ""))
+            if ts is None:
+                continue
+            # archive every line exactly once (same dedup key as replay)
+            if _gpsbuf_last_ts is None or ts > _gpsbuf_last_ts:
+                af.write(json.dumps({"time": row.get("time", ""),
+                                     "message": msg}) + "\n")
+                archived += 1
+            if _gpsbuf_last_ts is not None and ts <= _gpsbuf_last_ts:
+                continue
+            parts = msg.split("|")
+            if len(parts) < 7:
+                continue
+            try:
+                lat = float(parts[1])
+                lon = float(parts[2])
+                speed_kmh = float(parts[3].split()[0])
+                bearing = float(parts[4].split()[0])
+                sats = int(parts[5])
+            except (ValueError, IndexError):
+                continue
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                continue
+            points.append((ts, lat, lon, speed_kmh, bearing, sats))
+    # NOTE: RouterOS 7 has no REST/CLI command to clear /log; the memory log is
+    # a ring buffer (KNOTs configured with memory-lines=300 and the account
+    # topic silenced), so old lines fall off on their own. Everything read is
+    # archived on the server before the log scrolls on.
     if not points:
+        if archived:
+            log.info("GPS buffer: %d line(s) archived, 0 new point(s)", archived)
         return
     points.sort(key=lambda p: p[0])
     sent = 0
@@ -488,8 +531,8 @@ def replay_gps_buffer():
         if save_position(gps, buffered=True):
             sent += 1
     _gpsbuf_last_ts = points[-1][0]
-    if sent:
-        log.info("GPS buffer replay: %d point(s) recovered into the track", sent)
+    log.info("GPS buffer replay: %d point(s) recovered, %d line(s) archived",
+             sent, archived)
 
 
 # --------------------------------------------------------------------------
@@ -1083,6 +1126,7 @@ def _cfg_snapshot():
         "NIGHT_END": _cfg("NIGHT_END", NIGHT_END),
         "GPS_POLL_SECONDS": max(60, _cfg("GPS_POLL_SECONDS", GPS_POLL_SECONDS)),
         "GATT_POLL_SECONDS": max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS)),
+        "GPSBUF_POLL_SECONDS": max(60, _cfg("GPSBUF_POLL_SECONDS", GPSBUF_POLL_SECONDS)),
         "STATIONARY_SPEED_KN": _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN),
         "GPS_STATIONARY_INTERVAL": max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL)),
         "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
@@ -1662,15 +1706,19 @@ def fetch_devices():
 
 
 def poll_loop():
+    global _knot_tunnel_was_up
     while True:
         fetch_devices()
         log_solar_sample()
         log_load_sample()
         fetch_lte()
         fetch_knot_status()
-        # replay KNOT-side buffered GPS points only when the tunnel is alive
-        if (_state.get("knot_status") or {}).get("tunnel_up"):
-            replay_gps_buffer()
+        # replay KNOT-side buffered GPS points only when the tunnel is alive;
+        # force a read right after a coverage gap (tunnel came back up)
+        tunnel_up = (_state.get("knot_status") or {}).get("tunnel_up")
+        if tunnel_up:
+            replay_gps_buffer(force=not _knot_tunnel_was_up)
+        _knot_tunnel_was_up = bool(tunnel_up)
         time.sleep(_poll_seconds())
 
 
@@ -1683,7 +1731,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.28.1"
+VERSION = "1.29.0"
 
 
 @app.route("/api/data")
@@ -1869,6 +1917,7 @@ def api_settings_post():
         "POLL_SECONDS_NIGHT": (0, 3600),
         "GPS_POLL_SECONDS": (60, 3600),
         "GATT_POLL_SECONDS": (60, 3600),
+        "GPSBUF_POLL_SECONDS": (60, 86400),
         "STATIONARY_SPEED_KN": (0.0, 20.0),
         "GPS_STATIONARY_INTERVAL": (30, 7200),
         "SOLAR_HISTORY_DAYS": (1, 30),
@@ -2714,6 +2763,10 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <label>BM6 GATT poll<small>real voltage read via persistent GATT connection</small></label>
     <span><input id="GATT_POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
   </div>
+  <div class="row">
+    <label>GPS buffer log read<small>how often the KNOT log is downloaded for the no-coverage GPS buffer (also read right after a coverage gap)</small></label>
+    <span><input id="GPSBUF_POLL_SECONDS" type="number" min="60" max="86400"><span class="unit">s</span></span>
+  </div>
 </div>
 
 <div class="card">
@@ -2788,7 +2841,8 @@ SETTINGS_HTML = """<!DOCTYPE html>
 <script>
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END",
-  "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "STATIONARY_SPEED_KN",
+  "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "GPSBUF_POLL_SECONDS",
+  "STATIONARY_SPEED_KN",
   "GPS_STATIONARY_INTERVAL", "SOLAR_HISTORY_DAYS"];
 async function load() {
   const d = await (await fetch("api/settings")).json();

@@ -1681,7 +1681,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.26.0"
+VERSION = "1.26.1"
 
 
 @app.route("/api/data")
@@ -2759,6 +2759,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
 <div class="msg" id="msg"></div>
 
 <script>
+function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END",
   "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "STATIONARY_SPEED_KN",
   "GPS_STATIONARY_INTERVAL", "SOLAR_HISTORY_DAYS"];

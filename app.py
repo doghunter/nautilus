@@ -1681,7 +1681,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.26.1"
+VERSION = "1.26.2"
 
 
 @app.route("/api/data")
@@ -2771,12 +2771,22 @@ async function load() {
 
 function vicRow(d) {
   d = d || {};
-  return `<div class="vic-row" style="display:grid;grid-template-columns:1.4fr 2fr 1fr 1fr auto;gap:8px;margin-bottom:8px">
-    <input class="vic-mac" placeholder="MAC e.g. F1:8A:86:DB:86:9E" value="${esc(d.mac || "")}">
-    <input class="vic-key" placeholder="advertisement key (hex)" value="${esc(d.key || "")}">
-    <input class="vic-serial" placeholder="serial" value="${esc(d.serial || "")}">
-    <input class="vic-puk" placeholder="PUK" value="${esc(d.puk || "")}">
-    <button class="btn" onclick="this.closest('.vic-row').remove()">\u2715</button>
+  return `<div class="vic-row" style="border:1px solid var(--line,#33415580);border-radius:8px;padding:10px;margin-bottom:10px">
+    <div style="display:grid;grid-template-columns:110px 1fr auto;gap:8px;align-items:center;margin-bottom:6px">
+      <label style="font-size:.75rem;color:#94a3b8">MAC</label>
+      <input class="vic-mac" placeholder="e.g. F1:8A:86:DB:86:9E" value="${esc(d.mac || "")}">
+      <button class="btn" title="remove" onclick="this.closest('.vic-row').remove()">\u2715</button>
+    </div>
+    <div style="display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;margin-bottom:6px">
+      <label style="font-size:.75rem;color:#94a3b8">Adv key</label>
+      <input class="vic-key" placeholder="from VictronConnect \u2192 Product Info \u2192 Instant Readout (hex)" value="${esc(d.key || "")}">
+    </div>
+    <div style="display:grid;grid-template-columns:110px 1fr 110px 1fr;gap:8px;align-items:center">
+      <label style="font-size:.75rem;color:#94a3b8">Serial</label>
+      <input class="vic-serial" placeholder="optional" value="${esc(d.serial || "")}">
+      <label style="font-size:.75rem;color:#94a3b8">PUK</label>
+      <input class="vic-puk" placeholder="optional" value="${esc(d.puk || "")}">
+    </div>
   </div>`;
 }
 

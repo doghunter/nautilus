@@ -168,6 +168,58 @@ When the KNOT itself is unreachable the card says so explicitly. This pairs
 with the KNOT-side watchdog script (ping CHR → LTE reset → reboot): the card
 tells you from shore whether the watchdog should be reacting.
 
+### GPS buffer and no-coverage recovery (v1.22.x)
+
+A small script on the KNOT (`gps-buffer`, scheduler every 5 min) writes one
+log line with the current GPS fix — marker `GBUF|lat|lon|speed|bearing|sat|time`
+— to the KNOT's persistent log. The log survives reboots and days without
+connectivity, so positions keep being recorded even when the boat is out of
+cellular coverage (the dashboard cannot poll the KNOT in that window). When
+the tunnel is up again, the app replays every new `GBUF` line to the same
+position-history backend, tagging the points `source=buffer`. The backend's
+< 25 m dedup keeps the track clean. On the **track page** buffered points
+render as dashed orange circles with a "no coverage" tag and a legend, both
+in the web view and in the KML export.
+
+The KNOT-side companion is an **LTE-aware watchdog** (script `watchdog-tunnel`,
+scheduler every 5 min): when the ping to the WireGuard relay fails it first
+checks the modem state — if the LTE is not in service (out of coverage while
+sailing) it does nothing and logs "no action"; it only resets the LTE
+interface (and reboots after three consecutive failures) when the modem is
+connected but the tunnel is stuck.
+
+### Timezone labelling (v1.24.0/v1.25.0)
+
+The KNOT clock is synced from GPS (`set-system-time=yes`, no NTP: the GPS
+works at sea, NTP would depend on the tunnel). The container runs with
+`TZ=Europe/Rome`, the same offset as the boat. Every clock time shown in the
+UI carries an explicit label (e.g. `UTC+0200`, computed at runtime so DST is
+handled automatically), and live GPS timestamps are stored tz-aware
+(`...T08:24:54+02:00`).
+
+### Victron devices manager (v1.26.0–v1.27.0)
+
+Encrypted Victron Instant Readout advertisements (SmartSolar chargers,
+SmartShunt battery monitors, BMV) are decoded directly. Devices are managed
+from the Settings page, **Victron devices**: a list of configured devices;
+clicking one opens an edit box with MAC, part number, encryption key
+(from VictronConnect → Product Info → Instant Readout), serial, PUK and
+BT PIN. With serial + PUK filled, the key is derived automatically on the
+first successful decode and locked in. The configuration is stored in
+`data/runtime_settings.json` (`VICTRON_DEVICES`), survives restarts, and can
+also be seeded from the `VICTRON_*` env vars (single legacy device). Multiple
+devices are supported: each is decoded independently; a **SmartShunt card**
+(battery voltage, SoC, battery current with sign, consumed Ah) appears on
+the dashboard when a battery-monitor readout decodes. The battery-monitor
+payload is a packed bit-field (victron-ble layout: remaining min, voltage,
+alarm, aux, aux mode, current in mA, consumed Ah, SoC).
+
+### KML export for Google Earth (v1.23.0)
+
+The track page has an **Export KML for Google Earth** button that downloads
+the selected date range as a KML file: the live track as a blue line,
+no-coverage (buffered) points as an orange line — matching the web view.
+
 ## 4. Dashboard
 
 - Dark theme, responsive, auto-refresh every 5 s, boat name in the header

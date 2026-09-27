@@ -29,6 +29,10 @@ per-boat code changes.
 - **Solar production history** — power samples are logged to SQLite and shown as a daily graph (today vs. yesterday) with a forecast built from previous days.
 - **Settings page** — all polling intervals (including night mode and the adaptive GPS skip) editable live from the dashboard.
 - **Consumption monitoring** — load current is logged too; a "Current used" graph sits next to solar production, and a `/stats` page totals produced/consumed energy by month and year with the net balance, plus per-month average solar day charts to compare the irradiation window month by month.
+- **Victron devices** — multiple SmartSolar/SmartShunt units decoded from their encrypted Instant Readout advertisements, configured from a Settings UI (encryption key, or serial+PUK with automatic key derivation).
+- **No-coverage GPS buffer** — the KNOT keeps logging GPS fixes while out of cellular range; on reconnection the track is rebuilt and the recovered points are highlighted (also in the KML export for Google Earth).
+- **Data usage** — SIM traffic estimation from the WireGuard counters with budget bar and month-end projection.
+- **Knot status** — tunnel handshake age, uptime and traffic at a glance.
 - **JSON API** — everything available at `/api/data`.
 
 ## Screenshots

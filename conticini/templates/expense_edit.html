@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Modifica spesa{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<h1>Modifica spesa #{{ e.id }}</h1>
+
+<div class="card">
+  <form method="post" action="{{ url_for('expense_update', exp_id=e.id) }}" enctype="multipart/form-data">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <div class="row">
+      <div><label>Data</label>
+        <input type="date" name="date" value="{{ e.date }}" required></div>
+      <div><label>Importo</label>
+        <input name="amount" inputmode="decimal" value="{{ '%.2f'|format(e.amount) }}" required></div>
+      <div><label>Valuta</label>
+        <select name="currency">
+          {% for c in currencies %}
+            <option {% if c == e.currency %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select></div>
+      <div><label>Categoria</label>
+        <select name="category">
+          {% for c in categories %}
+            <option {% if c == e.category %}selected{% endif %}>{{ c }}</option>
+          {% endfor %}
+        </select></div>
+    </div>
+    <label>Descrizione / note</label>
+    <input name="description" maxlength="500" value="{{ e.description or '' }}">
+    <div class="row" style="margin-top:10px">
+      <div style="flex:0 0 auto;align-self:center">
+        <label style="display:inline"><input type="checkbox" name="paid" style="width:auto"
+               {% if e.paid %}checked{% endif %} data-paid-toggle>
+          Già pagata</label>
+      </div>
+      <div data-paid-date style="{{ '' if e.paid else 'display:none' }}">
+        <label>Data pagamento</label>
+        <input type="date" name="paid_date" value="{{ e.paid_date or e.date }}">
+      </div>
+    </div>
+    <label>Aggiungi allegati (PDF, JPG, PNG — ricevute/fatture)</label>
+    <input type="file" name="files" multiple accept="application/pdf,image/jpeg,image/png">
+    <div style="margin-top:12px">
+      <button class="btn" type="submit">Salva modifiche</button>
+      <a class="btn ghost" href="{{ url_for('expenses') }}">Annulla</a>
+    </div>
+  </form>
+</div>
+
+{% if atts %}
+<div class="card">
+  <h2>Allegati esistenti</h2>
+  <table>
+    <tr><th>File</th><th>Dimensione</th><th></th></tr>
+    {% for a in atts %}
+    <tr>
+      <td><a class="att" href="{{ url_for('attachment_download', att_id=a.id) }}" target="_blank">
+          📎 {{ a.original_name }}</a></td>
+      <td class="muted">{{ (a.size / 1048576) | round(1) }} MB · {{ a.uploaded_by }}</td>
+      <td>
+        <form class="inline" method="post"
+              action="{{ url_for('attachment_delete', att_id=a.id) }}"
+              data-confirm="Eliminare l'allegato {{ a.original_name }}?">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button class="btn small danger" type="submit">Elimina</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+{% endblock %}

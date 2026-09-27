@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% block title %}Spese{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<h1>Registro spese</h1>
+
+<div class="card">
+  <h2>Nuova spesa</h2>
+  <form method="post" action="{{ url_for('expense_new') }}" enctype="multipart/form-data">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <div class="row">
+      <div><label>Data</label><input type="date" name="date" required></div>
+      <div><label>Importo</label><input name="amount" inputmode="decimal"
+             placeholder="123.45" required></div>
+      <div><label>Valuta</label>
+        <select name="currency">{% for c in currencies %}<option>{{ c }}</option>{% endfor %}</select>
+      </div>
+      <div><label>Categoria</label>
+        <select name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select>
+      </div>
+    </div>
+    <label>Descrizione / note</label>
+    <input name="description" maxlength="500" placeholder="es. Rifornimento Porto Marana">
+    <label>Allegati (PDF, JPG, PNG — ricevute/fatture)</label>
+    <input type="file" name="files" multiple accept="application/pdf,image/jpeg,image/png">
+    <div class="row" style="margin-top:10px">
+      <div style="flex:0 0 auto;align-self:center">
+        <label style="display:inline"><input type="checkbox" name="paid" style="width:auto"
+               data-paid-toggle>
+        Già pagata</label>
+      </div>
+      <div data-paid-date style="display:none">
+        <label>Data pagamento</label>
+        <input type="date" name="paid_date">
+      </div>
+    </div>
+    <div style="margin-top:12px"><button class="btn" type="submit">Registra spesa</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Filtri</h2>
+  <form method="get" action="{{ url_for('expenses') }}" class="row">
+    <div><label>Da</label><input type="date" name="from" value="{{ dfrom }}"></div>
+    <div><label>A</label><input type="date" name="to" value="{{ dto }}"></div>
+    <div><label>Categoria</label>
+      <select name="cat">
+        <option value="">— tutte —</option>
+        {% for c in categories %}
+          <option {% if c == cat %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div><label>Stato pagamento</label>
+      <select name="paid">
+        <option value="">— tutti —</option>
+        <option value="1" {% if paid == '1' %}selected{% endif %}>pagate</option>
+        <option value="0" {% if paid == '0' %}selected{% endif %}>da pagare</option>
+      </select>
+    </div>
+    <div style="align-self:end"><button class="btn ghost" type="submit">Filtra</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Totale{% if totals|length > 1 %}i{% endif %}</h2>
+  <div class="row">
+    {% for cur, t in totals.items() %}
+      <div><div class="muted">{{ cur }} ({{ t[1] }} voci)</div>
+        <div class="total">{{ '%.2f'|format(t[0]) }} {{ cur }}</div></div>
+    {% else %}
+      <div class="muted">Nessuna spesa nel periodo/filtro selezionato.</div>
+    {% endfor %}
+  </div>
+  {% if by_cat %}
+  <h2 style="margin-top:14px">Subtotali per categoria</h2>
+  <table>
+    {% for (cur, c), v in by_cat.items() %}
+      <tr><td><span class="pill">{{ c }}</span></td>
+          <td style="text-align:right">{{ '%.2f'|format(v) }} {{ cur }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Voci ({{ rows|length }})</h2>
+  {% if rows %}
+  <table>
+    <tr><th>Data</th><th>Importo</th><th>Categoria</th><th>Descrizione</th><th>Allegati</th><th>Stato</th><th>Reg. da</th><th></th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>{{ r.date }}</td>
+      <td><b>{{ '%.2f'|format(r.amount) }} {{ r.currency }}</b></td>
+      <td><span class="pill">{{ r.category }}</span></td>
+      <td>{{ r.description or '—' }}</td>
+      <td>
+        {% for a in atts[r.id] %}
+          <a class="att" href="{{ url_for('attachment_download', att_id=a.id) }}" target="_blank">
+            📎 {{ a.original_name }}</a><br>
+        {% else %}<span class="muted">—</span>
+        {% endfor %}
+      </td>
+      <td>
+        {% if r.paid %}
+          <span class="pill">✓ pagata</span>
+          {% if r.paid_date %}<div class="muted">il {{ r.paid_date }}</div>{% endif %}
+        {% else %}
+          <span class="pill warn">da pagare</span>
+        {% endif %}
+        <form class="inline" method="post" action="{{ url_for('expense_toggle_paid', exp_id=r.id) }}">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          {% if not r.paid %}
+            <input type="date" name="paid_date" style="width:auto;display:inline-block;font-size:.72rem;padding:3px 6px;margin-top:4px" value="{{ r.date }}">
+          {% endif %}
+          <button class="btn small {{ 'ghost' if r.paid else '' }}" type="submit">
+            {{ 'Annulla' if r.paid else 'Segna pagata' }}</button>
+        </form>
+      </td>
+      <td class="muted">{{ r.created_by }}</td>
+      <td>
+        <a class="btn small ghost" href="{{ url_for('expense_edit', exp_id=r.id) }}">Modifica</a>
+        <form class="inline" method="post" action="{{ url_for('expense_delete', exp_id=r.id) }}"
+              data-confirm="Eliminare la spesa del {{ r.date }} ({{ '%.2f'|format(r.amount) }} {{ r.currency }}) e i suoi allegati?">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button class="btn small danger" type="submit">Elimina</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">Nessuna spesa registrata.</p>{% endif %}
+</div>
+{% endblock %}

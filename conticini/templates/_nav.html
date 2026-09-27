@@ -1,0 +1,22 @@
+<header>
+  <span class="brand">⚓ Conticini</span>
+  <a href="{{ url_for('index') }}">Panoramica</a>
+  <a href="{{ url_for('documents') }}">Documenti</a>
+  <a href="{{ url_for('expenses') }}">Spese</a>
+  {% if session.get('is_admin') %}<a href="{{ url_for('users') }}">Utenti</a>{% endif %}
+  <a href="{{ url_for('profile') }}">Profilo</a>
+  <span class="spacer"></span>
+  <span class="muted" style="color:#64748b">{{ session.user }}</span>
+  <span class="ver">v{{ version }}</span>
+  <form class="inline" method="post" action="{{ url_for('logout') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <button class="btn ghost small" type="submit">Esci</button>
+  </form>
+</header>
+<main>
+  {% with msgs = get_flashed_messages(with_categories=true) %}
+    {% for cat, m in msgs %}
+      <div class="flash {{ 'err' if cat == 'error' else '' }}">{{ m }}</div>
+    {% endfor %}
+  {% endwith %}
+</main>

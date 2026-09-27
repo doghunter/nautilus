@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Documenti{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<h1>Documenti barca <span class="muted">(solo PDF, max {{ max_mb }} MB)</span></h1>
+
+<div class="card">
+  <h2>Carica documento</h2>
+  <form method="post" action="{{ url_for('documents_upload') }}" enctype="multipart/form-data">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <div class="row">
+      <div>
+        <label>File PDF</label>
+        <input type="file" name="file" accept="application/pdf,.pdf" required>
+      </div>
+      <div>
+        <label>Categoria</label>
+        <select name="category">
+          {% for c in categories %}<option>{{ c }}</option>{% endfor %}
+        </select>
+      </div>
+    </div>
+    <label>Descrizione (opzionale)</label>
+    <input name="description" maxlength="200" placeholder="es. Polizza 2026, scadenza giugno">
+    <div style="margin-top:12px"><button class="btn" type="submit">Carica</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Ricerca e filtri</h2>
+  <form method="get" action="{{ url_for('documents') }}" class="row">
+    <div><label>Testo</label><input name="q" value="{{ q }}" placeholder="nome o descrizione"></div>
+    <div><label>Categoria</label>
+      <select name="cat">
+        <option value="">— tutte —</option>
+        {% for c in categories %}
+          <option {% if c == cat %}selected{% endif %}>{{ c }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div style="align-self:end"><button class="btn ghost" type="submit">Filtra</button></div>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Archivio ({{ docs|length }})</h2>
+  {% if docs %}
+  <table>
+    <tr><th>File</th><th>Categoria</th><th>Descrizione</th><th>Caricato</th><th>Azioni</th></tr>
+    {% for d in docs %}
+    <tr>
+      <td><b>{{ d.original_name }}</b><br>
+          <span class="muted">{{ (d.size / 1048576) | round(1) }} MB · {{ d.uploaded_by }}</span></td>
+      <td><span class="pill">{{ d.category }}</span></td>
+      <td>{{ d.description or '—' }}</td>
+      <td class="muted">{{ d.uploaded_at[:16].replace('T',' ') }}</td>
+      <td>
+        <a class="btn small ghost" href="{{ url_for('document_view', doc_id=d.id) }}" target="_blank">Anteprima</a>
+        <a class="btn small ghost" href="{{ url_for('document_download', doc_id=d.id) }}">Scarica</a>
+        <a class="btn small ghost" href="{{ url_for('document_edit', doc_id=d.id) }}">Modifica</a>
+        <form class="inline" method="post" action="{{ url_for('document_delete', doc_id=d.id) }}"
+              data-confirm="Eliminare {{ d.original_name }}?">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button class="btn small danger" type="submit">Elimina</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">Nessun documento{{ ' con questi filtri' if q or cat else '' }}.</p>{% endif %}
+</div>
+{% endblock %}

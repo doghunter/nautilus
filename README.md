@@ -9,6 +9,9 @@ One codebase serves any number of boats: all boat-specific values (sensor MACs,
 KNOT address/credentials, boat name) come from environment variables — no
 per-boat code changes.
 
+This repository also contains **Conticini**, the companion private boat
+management app (document archive + expense log): see [conticini/](conticini/).
+
 ## What it does
 
 - **BM6 battery monitor** — real voltage, SoC, temperature and state via a
@@ -68,6 +71,7 @@ The dashboard is then served on port 8080 (default URL prefix `/nautilus`).
 | `.env.example` | All supported configuration variables |
 | `docs/MANUAL.md` | Full manual (architecture, BLE protocols, API, troubleshooting) |
 | `docs/screenshots/` | Anonymized screenshots of dashboard, stats, track and settings pages |
+| `conticini/` | Companion app: private area with boat documents and expense log (see `conticini/README.md`) |
 
 ## Credits
 

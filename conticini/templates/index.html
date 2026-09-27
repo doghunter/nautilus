@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}Panoramica{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<h1>Panoramica</h1>
+<div class="card">
+  <div class="row">
+    <div>
+      <div class="muted">Documenti archiviati</div>
+      <div class="total">{{ n_docs }}</div>
+      <a class="btn ghost small" href="{{ url_for('documents') }}">Vai ai documenti</a>
+    </div>
+    <div>
+      <div class="muted">Voci di spesa</div>
+      <div class="total">{{ n_exp }}</div>
+      <a class="btn ghost small" href="{{ url_for('expenses') }}">Vai al registro</a>
+    </div>
+    <div>
+      <div class="muted">Totale per valuta</div>
+      {% for t in totals %}
+        <div class="total">{{ '%.2f'|format(t.s) }} {{ t.currency }}
+          <span class="muted">({{ t.n }} voci)</span></div>
+      {% else %}
+        <div class="muted">Nessuna spesa registrata</div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+<div class="card">
+  <h2>Riepilogo spese per anno</h2>
+  {% if years %}
+    {% for year, currencies in years.items() %}
+      {% for currency, c in currencies.items() %}
+        <h2 style="margin-top:16px">{{ year }} <span class="muted">· {{ currency }} · {{ c.count }} voci</span></h2>
+        <table>
+          <tr><th>Utente</th><th style="text-align:right">Totale</th>
+              <th style="text-align:right">Voci</th><th>Quota</th></tr>
+          {% for user, u in c.users.items() %}
+          <tr>
+            <td><b>{{ user }}</b>
+              {% if u.unpaid > 0 %}<span class="pill warn" style="margin-left:6px">da pagare {{ '%.2f'|format(u.unpaid) }}</span>{% endif %}
+            </td>
+            <td style="text-align:right">
+              {{ '%.2f'|format(u.paid + u.unpaid) }} {{ currency }}
+              <div class="muted">pagate {{ '%.2f'|format(u.paid) }}{% if u.unpaid > 0 %} · da pagare {{ '%.2f'|format(u.unpaid) }}{% endif %}</div>
+            </td>
+            <td style="text-align:right" class="muted">{{ u.n }}</td>
+            <td>
+              <div style="display:flex;align-items:center;gap:8px">
+                <div class="bar"><div style="width:{{ (((u.paid + u.unpaid) / c.total) * 100) | round(1) }}%"></div></div>
+                <span class="muted" style="min-width:48px;text-align:right">
+                  {{ '%.1f'|format(((u.paid + u.unpaid) / c.total) * 100) }}%</span>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+          <tr>
+            <td><b>Totale {{ year }}</b></td>
+            <td style="text-align:right"><b>{{ '%.2f'|format(c.total) }} {{ currency }}</b><br>
+              <span class="muted">pagate {{ '%.2f'|format(c.total - c.total_unpaid) }} · da pagare <b>{{ '%.2f'|format(c.total_unpaid) }}</b></span></td>
+            <td></td><td></td>
+          </tr>
+        </table>
+      {% endfor %}
+    {% endfor %}
+  {% else %}
+    <p class="muted">Nessuna spesa registrata.</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Ultime spese</h2>
+  {% if recent %}
+  <table>
+    <tr><th>Data</th><th>Categoria</th><th>Descrizione</th><th style="text-align:right">Importo</th></tr>
+    {% for r in recent %}
+      <tr>
+        <td>{{ r.date }}</td><td>{{ r.category }}</td><td>{{ r.description or '—' }}</td>
+        <td style="text-align:right">{{ '%.2f'|format(r.amount) }} {{ r.currency }}</td>
+      </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">Ancora nessuna spesa.</p>{% endif %}
+</div>
+{% endblock %}

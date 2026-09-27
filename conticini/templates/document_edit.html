@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Modifica documento{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<h1>Modifica documento #{{ d.id }}</h1>
+
+<div class="card">
+  <p class="muted">File: <b>{{ d.original_name }}</b> ·
+     {{ (d.size / 1048576) | round(1) }} MB · caricato da {{ d.uploaded_by }}
+     il {{ d.uploaded_at[:16].replace('T',' ') }}</p>
+  <form method="post" action="{{ url_for('document_update', doc_id=d.id) }}">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <label>Nome file visualizzato</label>
+    <input name="original_name" maxlength="80" value="{{ d.original_name }}" required>
+    <label>Categoria</label>
+    <select name="category">
+      {% for c in categories %}
+        <option {% if c == d.category %}selected{% endif %}>{{ c }}</option>
+      {% endfor %}
+    </select>
+    <label>Descrizione</label>
+    <input name="description" maxlength="200" value="{{ d.description or '' }}"
+           placeholder="es. Polizza 2026, scadenza giugno">
+    <div style="margin-top:12px">
+      <button class="btn" type="submit">Salva modifiche</button>
+      <a class="btn ghost" href="{{ url_for('documents') }}">Annulla</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

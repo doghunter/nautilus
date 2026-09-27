@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cg stroke='%2338bdf8' stroke-width='5' stroke-linecap='round' fill='none'%3E%3Ccircle cx='32' cy='15' r='6'/%3E%3Cline x1='32' y1='21' x2='32' y2='52'/%3E%3Cline x1='20' y1='30' x2='44' y2='30'/%3E%3Cpath d='M 14 40 C 14 55, 50 55, 50 40'/%3E%3Cline x1='14' y1='40' x2='20' y2='44'/%3E%3Cline x1='50' y1='40' x2='44' y2='44'/%3E%3C/g%3E%3C/svg%3E">
+<title>{% block title %}Conticini{% endblock %} · {{ boat_name }}</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+         background: #f1f5f9; color: #1e293b; min-height: 100vh; }
+  header { background: #0f172a; color: #e2e8f0; padding: 14px 24px;
+           display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  header a { color: #cbd5e1; text-decoration: none; font-size: .95rem;
+             padding: 6px 10px; border-radius: 8px; }
+  header a:hover, header a.active { background: #1e293b; color: #38bdf8; }
+  header .brand { font-weight: 700; font-size: 1.1rem; color: #38bdf8; margin-right: 8px; }
+  header .spacer { flex: 1; }
+  header .ver { font-size: .72rem; color: #64748b; }
+  main { max-width: 1080px; margin: 26px auto; padding: 0 18px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+          padding: 22px; margin-bottom: 20px;
+          box-shadow: 0 2px 8px rgba(15,23,42,.06); }
+  h1 { font-size: 1.3rem; margin-bottom: 14px; }
+  h2 { font-size: 1.05rem; margin: 14px 0 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  th { text-align: left; color: #64748b; font-size: .72rem; text-transform: uppercase;
+       padding: 8px 10px; border-bottom: 2px solid #e2e8f0; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
+  tr:hover td { background: #f8fafc; }
+  .btn { display: inline-block; border: 0; border-radius: 8px; padding: 8px 16px;
+         font-size: .88rem; cursor: pointer; text-decoration: none;
+         background: #2563eb; color: #fff; }
+  .btn:hover { background: #1d4ed8; }
+  .btn.small { padding: 4px 10px; font-size: .78rem; }
+  .btn.danger { background: #dc2626; }
+  .btn.danger:hover { background: #b91c1c; }
+  .btn.ghost { background: #fff; color: #334155; border: 1px solid #cbd5e1; }
+  .btn.ghost:hover { background: #f8fafc; }
+  input, select, textarea { font: inherit; padding: 8px 10px; border: 1px solid #cbd5e1;
+         border-radius: 8px; background: #fff; color: #1e293b; width: 100%; }
+  label { display: block; font-size: .78rem; color: #475569; margin: 10px 0 4px; }
+  .row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+  .flash { background: #ecfdf5; border: 1px solid #6ee7b7; color: #065f46;
+           padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: .88rem; }
+  .flash.err { background: #fef2f2; border-color: #fca5a5; color: #991b1b; }
+  .error { background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b;
+           padding: 10px 14px; border-radius: 8px; margin-bottom: 14px; font-size: .9rem; }
+  .muted { color: #64748b; font-size: .78rem; }
+  .pill { display: inline-block; font-size: .68rem; padding: 2px 9px; border-radius: 999px;
+          background: #e0f2fe; color: #075985; }
+  .pill.warn { background: #fef9c3; color: #854d0e; }
+  .total { font-size: 1.05rem; font-weight: 700; color: #1d4ed8; }
+  .bar { height: 8px; background: #e2e8f0; border-radius: 4px; overflow: hidden; flex: 1; min-width: 80px; }
+  .bar > div { height: 100%; background: linear-gradient(90deg,#3b82f6,#38bdf8); border-radius: 4px; }
+  .login-box { max-width: 380px; margin: 8vh auto; }
+  .login-box .brand { text-align: center; font-size: 1.6rem; font-weight: 800;
+                      color: #0f172a; margin-bottom: 4px; }
+  .login-box .sub { text-align: center; color: #64748b; margin-bottom: 18px; }
+  code.secret { display: block; background: #f1f5f9; padding: 10px; border-radius: 8px;
+                font-size: .9rem; word-break: break-all; margin: 8px 0; }
+  .qr { text-align: center; margin: 10px 0; }
+  .qr svg { width: 220px; height: 220px; }
+  .att { font-size: .75rem; margin-right: 6px; }
+  form.inline { display: inline; }
+</style>
+</head>
+<body>
+{% block body %}{% endblock %}
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

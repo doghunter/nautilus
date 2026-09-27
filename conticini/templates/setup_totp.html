@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Configura 2FA{% endblock %}
+{% block body %}
+<div class="login-box" style="max-width:460px">
+  <div class="brand">🔐 Configura Google Authenticator</div>
+  <div class="sub">Primo accesso di <b>{{ username }}</b>: salva il segreto ora.</div>
+  <div class="card">
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    {% if qr_svg %}<div class="qr">{{ qr_svg | safe }}</div>{% endif %}
+    <p class="muted">1. Apri Google Authenticator → Aggiungi account → Scansiona codice QR
+    (oppure inserisci il codice manualmente).</p>
+    <p class="muted">2. Chiave manuale:</p>
+    <code class="secret">{{ secret }}</code>
+    <form method="post" action="{{ url_for('setup_totp_confirm') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <label>Codice a 6 cifre generato dall'app</label>
+      <input name="totp" inputmode="numeric" maxlength="6" autocomplete="one-time-code"
+             autofocus required>
+      <div style="margin-top:14px">
+        <button class="btn" type="submit" style="width:100%">Attiva e accedi</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

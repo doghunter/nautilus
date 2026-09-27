@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Accedi{% endblock %}
+{% block body %}
+<div class="login-box">
+  <div class="brand">⚓ Conticini</div>
+  <div class="sub">Area privata — {{ boat_name }}</div>
+  <div class="card">
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="post" action="{{ url_for('login') }}">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      {% if totp_needed %}
+        <p class="muted">Password verificata per <b>{{ username }}</b>.
+        Inserisci il codice a 6 cifre di Google Authenticator.</p>
+        <label>Codice 2FA</label>
+        <input name="totp" inputmode="numeric" pattern="[0-9]*" maxlength="6"
+               autocomplete="one-time-code" autofocus required>
+        <input type="hidden" name="username" value="{{ username }}">
+        <input type="hidden" name="password" value="">
+      {% else %}
+        <label>Username</label>
+        <input name="username" autocomplete="username" autofocus required>
+        <label>Password</label>
+        <input type="password" name="password" autocomplete="current-password" required>
+      {% endif %}
+      <div style="margin-top:16px">
+        <button class="btn" type="submit" style="width:100%">
+          {% if totp_needed %}Verifica codice{% else %}Accedi{% endif %}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

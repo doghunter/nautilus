@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Utenti{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<h1>Utenti</h1>
+
+<div class="card">
+  <h2>Nuovo utente</h2>
+  <form method="post" action="{{ url_for('user_new') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <div class="row">
+      <div><label>Username (email o nome)</label><input name="username" required></div>
+      <div><label>Password (min 10 caratteri)</label>
+        <input type="password" name="password" minlength="10" required></div>
+      <div style="align-self:end">
+        <label style="display:inline"><input type="checkbox" name="is_admin" style="width:auto"> Amministratore</label>
+      </div>
+    </div>
+    <div style="margin-top:12px"><button class="btn" type="submit">Crea utente</button></div>
+  </form>
+  <p class="muted">Al primo accesso il nuovo utente dovrà configurare Google Authenticator.</p>
+</div>
+
+<div class="card">
+  <h2>Elenco</h2>
+  <table>
+    <tr><th>Username</th><th>Ruolo</th><th>2FA</th><th>Creato</th><th>Ultimo accesso</th><th>Azioni</th></tr>
+    {% for u in users %}
+    <tr>
+      <td><b>{{ u.username }}</b></td>
+      <td>{{ 'Admin' if u.is_admin else 'Utente' }}</td>
+      <td>{% if u.totp_enabled %}<span class="pill">attivo</span>
+          {% else %}<span class="pill warn">da configurare</span>{% endif %}</td>
+      <td class="muted">{{ u.created_at[:10] }}</td>
+      <td class="muted">{{ (u.last_login[:16].replace('T',' ') if u.last_login) or 'mai' }}</td>
+      <td>
+        {% if u.id != session.uid %}
+        <form class="inline" method="post" action="{{ url_for('user_delete', user_id=u.id) }}"
+              data-confirm="Eliminare {{ u.username }}?">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button class="btn small danger" type="submit">Elimina</button>
+        </form>
+        {% endif %}
+        <form class="inline" method="post" action="{{ url_for('user_reset_totp', user_id=u.id) }}"
+              data-confirm="Azzerare il 2FA di {{ u.username }}? Dovrà scansionare un nuovo QR.">
+          <input type="hidden" name="_csrf" value="{{ csrf }}">
+          <button class="btn small ghost" type="submit">Reset 2FA</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+# Secrets / environment
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Local data (SQLite DB, uploaded files, secret key)
+data/

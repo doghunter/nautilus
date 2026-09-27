@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Profilo{% endblock %}
+{% block body %}
+{% include "_nav.html" %}
+<h1>Profilo — {{ username }}</h1>
+
+<div class="card">
+  <h2>Cambia password</h2>
+  <form method="post" action="{{ url_for('profile') }}">
+    <input type="hidden" name="_csrf" value="{{ csrf }}">
+    <div class="row">
+      <div><label>Password attuale</label>
+        <input type="password" name="old" autocomplete="current-password" required></div>
+      <div><label>Nuova password (min 10)</label>
+        <input type="password" name="new1" minlength="10" autocomplete="new-password" required></div>
+      <div><label>Ripeti nuova password</label>
+        <input type="password" name="new2" minlength="10" autocomplete="new-password" required></div>
+    </div>
+    <div style="margin-top:12px"><button class="btn" type="submit">Aggiorna password</button></div>
+  </form>
+  <p class="muted">Il 2FA si gestisce dall'app Google Authenticator. Se cambi telefono,
+  chiedi all'admin un reset 2FA dalla pagina Utenti.</p>
+</div>
+{% endblock %}

@@ -55,7 +55,7 @@ import time
 from datetime import datetime
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 # --------------------------------------------------------------------------
 # Configuration (fully parametric via environment, see docs/MANUAL.md)
@@ -1565,7 +1565,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.22.2"
+VERSION = "1.23.0"
 
 
 @app.route("/api/data")
@@ -1610,6 +1610,55 @@ def api_track_history():
     except Exception as exc:
         log.warning("track-history (proxy conticini): %s", exc)
         return jsonify({"error": "track history unavailable"}), 503
+
+
+@app.route("/api/boat/track.kml")
+@app.route("/nautilus/api/boat/track.kml")
+@app.route(URL_PREFIX_ALIAS + "/api/boat/track.kml")
+def api_track_kml():
+    """Track history as KML for Google Earth (same filters as track-history).
+
+    Live track renders as a blue LineString, buffered 'no coverage' points
+    as an orange one, so gaps while out of coverage are visible in Earth.
+    """
+    if not INTERNAL_TOKEN:
+        return jsonify({"error": "track history not configured"}), 503
+    qs = request.query_string.decode()
+    try:
+        r = requests.get(CONTICINI_BASE + "/internal/boat/track-history"
+                         + ("?" + qs if qs else ""),
+                         headers=_conticini_headers(), timeout=15)
+        points = (r.json() or {}).get("points", [])
+    except Exception as exc:
+        log.warning("track.kml (proxy conticini): %s", exc)
+        return jsonify({"error": "track history unavailable"}), 503
+
+    def _placemark(name, color_kml, coords):
+        return ("<Placemark><name>%s</name><Style><LineStyle>"
+                "<color>%s</color><width>3</width></LineStyle></Style>"
+                "<LineString><tessellate>1</tessellate><coordinates>%s"
+                "</coordinates></LineString></Placemark>"
+                % (name, color_kml, " ".join(coords)))
+
+    # KML colors are aabbggrr
+    live_coords, buffer_coords = [], []
+    for p in points:
+        coord = "%.6f,%.6f" % (p["longitude"], p["latitude"])
+        live_coords.append(coord)
+        if p.get("source") == "buffer":
+            buffer_coords.append(coord)
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<kml xmlns="http://www.opengis.net/kml/2.2">',
+             "<Document><name>%s track</name>" % BOAT_NAME]
+    if live_coords:
+        parts.append(_placemark("Track (live)", "ff38bdf8", live_coords))
+    if buffer_coords:
+        parts.append(_placemark("No-coverage points", "fffc9a2f", buffer_coords))
+    parts.append("</Document></kml>")
+    body = "\n".join(parts)
+    return Response(body, mimetype="application/vnd.google-earth.kml+xml",
+                    headers={"Content-Disposition":
+                             "attachment; filename=track.kml"})
 
 
 @app.route("/api/solar/daily")
@@ -2061,7 +2110,7 @@ async function refresh() {
           <button id="btn-gmaps" onclick="window._showMap('gmaps')">Google Maps</button>
         </div>
         <div class="map-wrap">
-          <div id="map"></div>
+          <a id="kml-export" class="gmaps-link" href="api/boat/track.kml" download="track.kml" style="display:inline-block;margin-bottom:10px">Export KML for Google Earth \u2197</a><div id="map"></div>
           <iframe id="gmap-frame" loading="lazy" style="display:none"
             src="about:blank"></iframe>
         </div>
@@ -2688,6 +2737,8 @@ async function loadTrack() {
   }
   trackLayer.clearLayers();
   const summary = document.getElementById("summary");
+    const kmlBtn = document.getElementById("kml-export");
+    if (kmlBtn) kmlBtn.href = "api/boat/track.kml?" + new URLSearchParams({start_date: document.getElementById("start-date").value, end_date: document.getElementById("end-date").value}).toString();
   summary.textContent = "loading…";
   try {
     const d = await (await fetch(url)).json();

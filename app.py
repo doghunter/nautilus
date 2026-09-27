@@ -1108,8 +1108,8 @@ def fetch_gps():
                 "satellites": int(g.get("satellites", "0")),
                 "altitude_m": float(g.get("altitude", "0").split()[0]),
                 "fix_time": fix_dt.split(" ")[-1] if fix_dt else "",
-# full local timestamp for history (container time = boat time)
-                "fix_time_iso": datetime.now().isoformat(timespec="seconds"),
+# full local timestamp for history (container TZ = boat time, see compose)
+                "fix_time_iso": datetime.now().astimezone().isoformat(timespec="seconds"),
             }
             _state["gps_ok"] = True
             _state["gps"]["report_mode"] = (
@@ -1565,7 +1565,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.23.0"
+VERSION = "1.24.0"
 
 
 @app.route("/api/data")

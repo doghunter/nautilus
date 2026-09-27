@@ -1683,7 +1683,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.27.1"
+VERSION = "1.28.0"
 
 
 @app.route("/api/data")
@@ -2793,10 +2793,12 @@ const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END"
 async function load() {
   const d = await (await fetch("api/settings")).json();
   FIELDS.forEach(f => { if (d[f] !== undefined) document.getElementById(f).value = d[f]; });
+  _vicNotes = d.BLE_NOTES || {};
   vicRender(d.VICTRON_DEVICES || []);
 }
 
 let _vicDevs = [];
+let _vicNotes = {};
 
 function vicRender(devs) {
   _vicDevs = devs || [];
@@ -2808,7 +2810,7 @@ function vicRender(devs) {
   box.innerHTML = _vicDevs.map((d, i) => `
   <div onclick="vicOpen(${i})" style="display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid #33415580;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">
     <div>
-      <div style="font-weight:600">${esc(d.part_number || "Victron device")}</div>
+      <div style="font-weight:600">${esc(vicTitle(d))}</div>
       <div style="font-size:.75rem;color:#94a3b8">${esc(d.mac)}${d.serial ? " \u00b7 " + esc(d.serial) : ""}${d.key ? " \u00b7 key \u2713" : " \u00b7 no key"}</div>
     </div>
     <div style="display:flex;gap:6px;align-items:center">
@@ -2817,9 +2819,14 @@ function vicRender(devs) {
   </div>`).join("");
 }
 
+function vicTitle(d) {
+  const note = (_vicNotes || {})[(d.mac || "").toUpperCase()];
+  return note || d.part_number || "Victron device";
+}
+
 function vicOpen(i) {
   const d = i >= 0 ? _vicDevs[i] : {};
-  document.getElementById("vic-modal-title").textContent = (i >= 0 ? "Edit " : "New ") + (d.part_number || "Victron device");
+  document.getElementById("vic-modal-title").textContent = (i >= 0 ? "Edit " : "New ") + vicTitle(d);
   document.getElementById("vm-mac").value = d.mac || "";
   document.getElementById("vm-pn").value = d.part_number || "";
   document.getElementById("vm-key").value = d.key || "";
@@ -2897,12 +2904,16 @@ async function loadBle() {
       const checked = sel.has(dev.mac.toUpperCase()) ? " checked" : "";
       const tag = dev.persist ? " <span style='color:#34d399;font-size:.68rem'>&#9679; persistent</span>" : "";
       const rssi = dev.rssi != null ? dev.rssi + " dBm" : "no signal";
-      return "<label style='display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid #334155;cursor:pointer'>" +
+      return "<label style='display:block;padding:7px 0;border-bottom:1px solid #334155;cursor:pointer'>" +
+        "<span style='display:flex;align-items:center;gap:10px'>" +
         "<input type='checkbox' class='ble-chk' value='" + dev.mac + "'" + checked + ">" +
         "<span style='flex:1'><b style='font-size:.8rem'>" + (dev.name || "(unnamed)") + "</b>" + tag +
         "<br><small style='color:#64748b;font-size:.68rem'>" + dev.mac + " · " + rssi + "</small></span>" +
+        "</span>" +
+        "<span style='display:flex;align-items:center;gap:10px;margin-top:5px'>" +
+        "<span style='width:16px'></span>" +
         "<input type='text' class='ble-note' data-mac='" + dev.mac + "' value='" + String(dev.note || "").replace(/'/g, "&#39;") + "'" +
-        " placeholder='note' maxlength='40' style='width:120px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.75rem'></label>";
+        " placeholder='note (used as the device title in the Victron list)' maxlength='40' style='flex:1;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.78rem'></span></label>";
     }).join("");
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>KNOT unreachable</p>";

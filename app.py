@@ -180,6 +180,103 @@ VICTRON_SERIAL = os.environ.get("VICTRON_SERIAL", "")
 VICTRON_PUK = os.environ.get("VICTRON_PUK", "")
 VICTRON_MARKER = "ffe10210"    # AD type FF + company 0x02E1 (LE) + prefix 0x10
 
+VIC_SHUNT_METRICS = {0x64: ("SmartShunt 500A/50mV",),
+                      0x65: ("SmartShunt 500A/50mV",)}
+
+
+def _victron_devices():
+    """Victron devices to decode: list of {mac, key, serial, puk}.
+
+    Sources (merged): the VICTRON_* env vars (single legacy device) and the
+    VICTRON_DEVICES runtime setting (JSON list, editable in Settings UI).
+    """
+    items = []
+    env_mac = (os.environ.get("VICTRON_MAC") or "").upper()
+    if env_mac:
+        items.append({"mac": env_mac,
+                      "key": (os.environ.get("VICTRON_ADV_KEY") or "").lower(),
+                      "serial": os.environ.get("VICTRON_SERIAL", ""),
+                      "puk": os.environ.get("VICTRON_PUK", "")})
+    raw = _runtime_cfg.get("VICTRON_DEVICES")
+    if raw:
+        try:
+            for it in json.loads(raw):
+                mac = str(it.get("mac", "")).upper()
+                if mac:
+                    items.append({"mac": mac,
+                                  "key": str(it.get("key", "")).lower(),
+                                  "serial": str(it.get("serial", "") or ""),
+                                  "puk": str(it.get("puk", "") or "")})
+        except (ValueError, AttributeError):
+            log.warning("VICTRON_DEVICES: JSON non valido, ignorato")
+    # dedupe by MAC (runtime entry wins over env)
+    seen = {}
+    for it in items:
+        seen[it["mac"]] = it
+    return list(seen.values())
+
+
+def _victron_store_key(mac, key):
+    """Locks a validated advertisement key into the runtime VICTRON_DEVICES."""
+    raw = _runtime_cfg.get("VICTRON_DEVICES")
+    items = json.loads(raw) if raw else []
+    for it in items:
+        if str(it.get("mac", "")).upper() == mac:
+            it["key"] = key.lower()
+            _runtime_cfg["VICTRON_DEVICES"] = json.dumps(items)
+            _runtime_cfg_save()
+            return
+
+
+class _VicBitReader:
+    """Reads Victron packed bit-fields, LSB first (victron-ble layout)."""
+
+    def __init__(self, data):
+        self._data = data
+        self._index = 0
+
+    def _bit(self):
+        b = (self._data[self._index >> 3] >> (self._index & 7)) & 1
+        self._index += 1
+        return b
+
+    def unsigned(self, n):
+        v = 0
+        for p in range(n):
+            v |= self._bit() << p
+        return v
+
+    def signed(self, n):
+        v = self.unsigned(n)
+        return v - (1 << n) if v & (1 << (n - 1)) else v
+
+
+def _victron_batt_monitor_parse(dec):
+    """Battery-monitor readout (SmartShunt/BMV) - victron-ble bitfield layout:
+    remaining_mins u16, voltage s16, alarm u16, aux u16, aux_mode u2,
+    current s22 (mA), consumed_ah u20 (0.1Ah), soc u10 (0.1%)."""
+    r = _VicBitReader(dec)
+    remaining_mins = r.unsigned(16)
+    voltage = r.signed(16)
+    alarm = r.unsigned(16)
+    aux = r.unsigned(16)
+    aux_mode = r.unsigned(2)
+    current = r.signed(22)
+    consumed_ah = r.unsigned(20)
+    soc = r.unsigned(10)
+    return {
+        "readout_kind": "battery-monitor",
+        "soc_pct": (soc / 10.0) if soc != 0x3FF else None,
+        "v_bat": (voltage / 100.0) if voltage != 0x7FFF else None,
+        "i_bat": (current / 1000.0) if current != 0x3FFFFF else None,
+        "consumed_ah": (-consumed_ah / 10.0) if consumed_ah != 0xFFFFF else None,
+        "remaining_mins": remaining_mins if remaining_mins != 0xFFFF else None,
+        "alarm": alarm,
+        "aux_mode": ["starter-voltage", "midpoint-voltage", "temperature",
+                     "disabled"][aux_mode] if aux_mode < 4 else "unknown",
+    }
+
+
 VIC_CHARGE_STATES = {0: "Off", 1: "Low power", 2: "Fault", 3: "Bulk",
                      4: "Absorption", 5: "Float", 6: "Storage",
                      7: "Equalize (manual)", 9: "Inverting", 11: "Power supply",
@@ -229,18 +326,21 @@ def parse_victron(dev, adv_key):
         return out
     payload = raw[idx + len(VICTRON_MARKER):]
     try:
-        data = bytes.fromhex(payload[:40])
+# solar readout = 19 bytes, battery-monitor = 23: take up to 46 hex-escaped bytes
+        data = bytes.fromhex(payload[:52])
     except ValueError:
         out["error"] = "malformed advertisement"
         return out
-    # layout victron-ble: prefix(2: 10 02) model(LE16) readout(1) iv(LE16) enc(check+12)
+    # layout victron-ble: prefix(2: 10 02) model(LE16) readout(1) iv(LE16) enc
+    # solar readout = 12 decrypted bytes, battery-monitor = 15 (118 bits):
+    # keep the whole encrypted payload, not just the first 13 bytes
     if len(data) < 19:
         out["error"] = "advertisement too short"
         return out
     model_id = data[1] | (data[2] << 8)
     readout_type = data[3]
     iv = data[4] | (data[5] << 8)
-    enc = data[6:19]
+    enc = data[6:]
     key = bytes.fromhex(adv_key)
     if enc[0] != key[0]:
         out["error"] = "advertisement key mismatch (key-check byte)"
@@ -248,6 +348,11 @@ def parse_victron(dev, adv_key):
     dec = _victron_ctr_decrypt(key, iv, enc[1:])
     b = dec[:12]
     def _s16(v): return v - 0x10000 if v & 0x8000 else v
+    # readout type 0x02 = battery monitor (SmartShunt / BMV): different layout
+    if readout_type == 0x02:
+        out.update(_victron_batt_monitor_parse(dec))
+        out["model"] = "SmartShunt"
+        return out
     load9 = 0x1FF if len(b) < 12 else ((b[10] | (b[11] << 8)) & 0x1FF)
     out.update({
         "model_id": model_id,
@@ -981,6 +1086,7 @@ def _cfg_snapshot():
         "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
         "BLE_DEVICES": _selected_ble_macs() or [],
         "BLE_NOTES": _ble_notes(),
+        "VICTRON_DEVICES": _victron_devices(),
     }
 
 
@@ -1002,6 +1108,7 @@ _state = {
     "source_ok": False,
     "last_poll": None,
     "tz_label": None,
+    "victron_devices": [],
     "gps_ok": False,
     "error": None,
 }
@@ -1509,30 +1616,36 @@ def fetch_devices():
         # Victron SmartSolar: advertisement cifrato, decodifica diretta.
 # The KNOT may not have it in the persistent table: search ALL seen
 # devices for the 0x02E1 manufacturer-data marker.
-        if VICTRON_SERIAL or VICTRON_MAC:
-            dev = (by_mac.get(VICTRON_MAC) if VICTRON_MAC else None)
-            if dev is None and not selected:
-                dev = next((d for d in r.json()
-                            if VICTRON_MARKER in (d.get("last-data") or "").lower()), None)
-            if dev:
-                key = VICTRON_ADV_KEY
-                parsed = parse_victron(dev, key) if key else {"error": "VICTRON_ADV_KEY not configured"}
-                if parsed.get("error") == "advertisement key mismatch (key-check byte)" \
-                        and VICTRON_SERIAL and VICTRON_PUK:
+        vdevs = _victron_devices()
+        _state["victron_devices"] = []
+        for vcfg in vdevs:
+            dev = by_mac.get(vcfg["mac"])
+            if not dev:
+                _state["victron_devices"].append(
+                    {"mac": vcfg["mac"], "error": "not seen by the KNOT"})
+                continue
+            key = vcfg["key"]
+            parsed = parse_victron(dev, key) if key else {"error": "advertisement key not set"}
+            if (parsed.get("error") == "advertisement key mismatch (key-check byte)"
+                    and vcfg["serial"] and vcfg["puk"]):
 # try to derive the key from serial+PUK and lock in the valid one
-                    for cand in _victron_derive_key(VICTRON_SERIAL, VICTRON_PUK):
-                        try:
-                            trial = parse_victron(dev, cand)
-                        except Exception:
-                            continue
-                        if not trial.get("error"):
-                            log.info("Victron: chiave derivata da seriale+PUK: %s", cand)
-                            VICTRON_ADV_KEY = cand
-                            parsed = trial
-                            break
-                _state["victron"] = parsed
-            else:
-                _state["victron"] = {"error": "Victron device not seen by the KNOT"}
+                for cand in _victron_derive_key(vcfg["serial"], vcfg["puk"]):
+                    try:
+                        trial = parse_victron(dev, cand)
+                    except Exception:
+                        continue
+                    if not trial.get("error"):
+                        log.info("Victron %s: key derived from serial+PUK",
+                                 vcfg["mac"])
+                        parsed = trial
+                        _victron_store_key(vcfg["mac"], cand)
+                        break
+            _state["victron_devices"].append(parsed)
+        # legacy single-device field kept for the MPPT card
+        _state["victron"] = next(
+            (p for p in _state["victron_devices"]
+             if p.get("model") == "SmartSolar" and not p.get("error")), None) \
+            if _state["victron_devices"] else None
         _state["source_ok"] = True
         _state["error"] = None
     except Exception as exc:
@@ -1568,7 +1681,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.25.0"
+VERSION = "1.26.0"
 
 
 @app.route("/api/data")
@@ -1761,6 +1874,32 @@ def api_settings_post():
         "NIGHT_END": (0, 23),
     }
     for k, v in body.items():
+        if k == "VICTRON_DEVICES":
+# list of {mac, key, serial, puk} - editable in Settings, null clears
+            import re as _vre
+            if v is None or v == []:
+                _runtime_cfg.pop("VICTRON_DEVICES", None)
+            elif isinstance(v, list) and v:
+                clean = []
+                for it in v:
+                    if not isinstance(it, dict) or not it.get("mac"):
+                        return jsonify({"error": "VICTRON_DEVICES: mac required"}), 400
+                    mac = str(it["mac"]).upper()
+                    if not _vre.fullmatch(r"[0-9A-F]{2}(:[0-9A-F]{2}){5}", mac):
+                        return jsonify({"error": "VICTRON_DEVICES: invalid MAC " + mac}), 400
+                    clean.append({
+                        "mac": mac,
+                        "key": str(it.get("key", "") or "").lower()[:40],
+                        "serial": str(it.get("serial", "") or "")[:30],
+                        "puk": str(it.get("puk", "") or "")[:30],
+                    })
+                _runtime_cfg["VICTRON_DEVICES"] = json.dumps(clean)
+            else:
+                return jsonify({"error": "VICTRON_DEVICES must be a list"}), 400
+            log.info("Victron devices aggiornati: %s",
+                     [d["mac"] for d in json.loads(_runtime_cfg["VICTRON_DEVICES"])])
+            _runtime_cfg_save()
+            continue
         if k == "BLE_NOTES":
 # notes/names per MAC: {MAC: text} dict, null clears
             if v is None or v == {}:
@@ -1931,6 +2070,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div class="grid">
   <div class="card" id="bm6"></div>
   <div class="card" id="mppt"></div>
+  <div class="card" id="shunt" style="display:none"></div>
   <div class="card" id="gps"></div>
   <div class="card" id="lte"></div>
   <div class="card" id="solar"></div>
@@ -2033,6 +2173,33 @@ async function refresh() {
         <div class="metric"><div class="k">RSSI</div><div class="v">${esc(v.rssi)} dBm</div></div>
       </div>
       <div class="foot"><div class="row">MAC: ${esc(v.mac)} · Last seen: ${esc(v.last_seen)} · data via encrypted BLE advertisement</div></div>`;
+    }
+  }
+  // ---- SmartShunt (battery monitor via encrypted adv) ----
+  const shunt = document.getElementById("shunt");
+  if (shunt) {
+    const vd = (d.victron_devices || []).filter(p => p.model === "SmartShunt" || /shunt|monitor/i.test(p.error || "") || (!p.error && p.readout_kind === "battery-monitor"));
+    if (!vd.length) {
+      shunt.style.display = "none";
+    } else {
+      shunt.style.display = "";
+      const p = vd[0];
+      if (p.error) {
+        shunt.innerHTML = `
+        <h2>⚡ SmartShunt <span class="chip bad">error</span></h2>
+        <div class="note">${esc(p.error)}${p.mac ? " · " + esc(p.mac) : ""}</div>`;
+      } else {
+        shunt.innerHTML = `
+        <h2>⚡ SmartShunt <span class="chip ${p.i_bat > 0.3 ? "ok" : p.i_bat < -0.3 ? "bad" : "idle"}">${p.i_bat > 0 ? "+" : ""}${p.i_bat != null ? p.i_bat.toFixed(1) : "—"} A</span></h2>
+        <div class="main-val">${p.v_bat != null ? p.v_bat.toFixed(2) : "—"} <small>V battery</small></div>
+        <div class="metrics">
+          <div class="metric"><div class="k">State of charge</div><div class="v">${p.soc_pct != null ? p.soc_pct.toFixed(0) : "—"} %</div></div>
+          <div class="metric"><div class="k">Battery current</div><div class="v">${p.i_bat != null ? p.i_bat.toFixed(1) : "—"} A</div></div>
+          <div class="metric"><div class="k">Consumed</div><div class="v">${p.consumed_ah != null ? p.consumed_ah.toFixed(2) : "—"} Ah</div></div>
+          <div class="metric"><div class="k">RSSI</div><div class="v">${esc(p.rssi)} dBm</div></div>
+        </div>
+        <div class="foot"><div class="row">MAC: ${esc(p.mac)} · Last seen: ${esc(p.last_seen)} · data via encrypted BLE advertisement</div></div>`;
+      }
     }
   } else if (!m) {
     mppt.innerHTML = "<h2>☀️ MPPT</h2><div class='note'>Device not seen.</div>";
@@ -2573,6 +2740,17 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <p class="hint" style="margin:0">Loading device list…</p>
   </div>
   <button class="btn" style="margin-top:12px" onclick="saveBle()">Save selection</button>
+</div>
+
+<div class="card">
+  <h2>Victron devices</h2>
+  <p class="hint">Encrypted Victron BLE advertisements (SmartSolar, SmartShunt). For each device: MAC and the advertisement key from VictronConnect (Product Info &rarr; Instant Readout). Alternatively fill serial + PUK: the key is derived and locked in automatically on the first successful decode. Values are saved on disk and survive restarts.</p>
+  <div id="vic-list" style="margin-top:10px"></div>
+  <div class="row" style="margin-top:8px">
+    <button class="btn" style="margin-right:8px" onclick="vicAddRow()">Add device</button>
+    <button class="btn" onclick="saveVictron()">Save</button>
+  </div>
+</div>
   <button class="btn reset" style="margin-top:12px" onclick="clearBle()">Clear selection</button>
 </div>
 
@@ -2587,6 +2765,41 @@ const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END"
 async function load() {
   const d = await (await fetch("api/settings")).json();
   FIELDS.forEach(f => { if (d[f] !== undefined) document.getElementById(f).value = d[f]; });
+  vicRender(d.VICTRON_DEVICES || []);
+}
+
+function vicRow(d) {
+  d = d || {};
+  return `<div class="vic-row" style="display:grid;grid-template-columns:1.4fr 2fr 1fr 1fr auto;gap:8px;margin-bottom:8px">
+    <input class="vic-mac" placeholder="MAC e.g. F1:8A:86:DB:86:9E" value="${esc(d.mac || "")}">
+    <input class="vic-key" placeholder="advertisement key (hex)" value="${esc(d.key || "")}">
+    <input class="vic-serial" placeholder="serial" value="${esc(d.serial || "")}">
+    <input class="vic-puk" placeholder="PUK" value="${esc(d.puk || "")}">
+    <button class="btn" onclick="this.closest('.vic-row').remove()">\u2715</button>
+  </div>`;
+}
+
+function vicRender(devs) {
+  document.getElementById("vic-list").innerHTML = (devs || []).map(vicRow).join("");
+}
+
+function vicAddRow() {
+  document.getElementById("vic-list").insertAdjacentHTML("beforeend", vicRow());
+}
+
+async function saveVictron() {
+  const msg = document.getElementById("msg");
+  const devs = [...document.querySelectorAll("#vic-list .vic-row")].map(r => ({
+    mac: r.querySelector(".vic-mac").value.trim(),
+    key: r.querySelector(".vic-key").value.trim(),
+    serial: r.querySelector(".vic-serial").value.trim(),
+    puk: r.querySelector(".vic-puk").value.trim(),
+  })).filter(d => d.mac);
+  const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({VICTRON_DEVICES: devs.length ? devs : null}) });
+  const d = await r.json();
+  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Victron devices saved \u2713"; }
+  else { msg.className = "msg err"; msg.textContent = d.error || "error"; }
 }
 async function save() {
   const msg = document.getElementById("msg");
@@ -2603,6 +2816,7 @@ async function save() {
 async function resetAll() {
   const body = {}; FIELDS.forEach(f => body[f] = null);
   body["BLE_DEVICES"] = null;
+  body["VICTRON_DEVICES"] = null;
   const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body) });
   const msg = document.getElementById("msg");
   if (r.ok) { msg.className = "msg ok"; msg.textContent = "Reset to .env values \u2713"; load(); loadBle(); }

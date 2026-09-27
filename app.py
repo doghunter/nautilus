@@ -1683,7 +1683,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.28.0"
+VERSION = "1.28.1"
 
 
 @app.route("/api/data")
@@ -2842,6 +2842,9 @@ function vicClose() {
 }
 
 function vicRemove(i) {
+  const d = _vicDevs[i] || {};
+  const name = (_vicNotes || {})[(d.mac || "").toUpperCase()] || d.part_number || d.mac || "this device";
+  if (!confirm("Remove " + name + " from the Victron devices?")) return;
   _vicDevs.splice(i, 1);
   vicPost();
 }

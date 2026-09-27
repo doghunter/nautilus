@@ -97,9 +97,9 @@ SOLAR_DB = os.environ.get("SOLAR_DB", "data/nautilus.db")
 BM6_MAC = os.environ.get("BM6_MAC", "").upper()
 MPPT_MAC = os.environ.get("MPPT_MAC", "").upper()
 
-# Chiave AES-128 BM6 (JeffWDH/bm6-battery-monitor): "leagend\xff\xfe0100009"
+# BM6 AES-128 key (JeffWDH/bm6-battery-monitor): "leagend\xff\xfe0100009"
 BM6_KEY = bytes([108, 101, 97, 103, 101, 110, 100, 255, 254, 48, 49, 48, 48, 48, 48, 57])
-BM6_ADV_MARKER = "0302f0ff11ff"   # AD: UUID servizio 0xFFF0 + 0x11 0xFF + blocco AES
+BM6_ADV_MARKER = "0302f0ff11ff"   # AD: service UUID 0xFFF0 + 0x11 0xFF + AES block
 
 MPPT_SERVICE_UART = "0303e0ff"    # AD: 16-bit UUID list with 0xFFE0 (Modbus channel)
 
@@ -148,7 +148,7 @@ def estimate_soc(voltage, btype=None):
     return pts[0][1]
 
 # GATT via REST (RouterOS >= 7.12): real voltage read from the BM6.
-# Il comando "d15507..." cifrato AES è costante (chiave BM6, IV nullo) —
+# The encrypted "d15507..." AES command is constant (BM6 key, null IV) —
 # verified identical to the one used by the JeffWDH repo and the tarball.ca post.
 KNOT_GATT = f"http://{KNOT_HOST}/rest/iot/bluetooth/connections"
 BM6_GATT_CMD = "697ea0b5d54cf024e794772355554114"   # encrypt("d15507" + 00*10)
@@ -839,7 +839,7 @@ def _aes_decrypt_block(block, rk):
                 s[4 * c + r] ^= kcol[r]
 
     def invshift():
-        for r in range(1, 4):                    # riga r: rotazione a destra di r
+        for r in range(1, 4):                    # row r: rotate right by r
             row = [s[4 * c + r] for c in range(4)]
             row = row[-r:] + row[:-r]
             for c in range(4):
@@ -1683,7 +1683,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.27.0"
+VERSION = "1.27.1"
 
 
 @app.route("/api/data")
@@ -2108,9 +2108,9 @@ async function refresh() {
     bm6.innerHTML = "<h2>BM6-{{BOAT}}</h2><div class='note'>Device not seen by the KNOT.</div>";
   } else {
     const cls = chipClass(b.voltage);
-    // SoC e stato mostrati: se disponibile la stima dal profilo batteria (soc_est),
-    // il SoC/stato del firmware BM6 è tarato su batterie auto piombo-acido e su
-    // LiFePO4 riporta assurdità (12% con batteria carica, "Tensione bassa" a 13.6V).
+    // SoC and state shown: when available, the estimate from the battery profile (soc_est);
+    // the BM6 firmware SoC/state is calibrated for automotive lead-acid batteries and
+    // reports nonsense on LiFePO4 (12% on a full battery, "low voltage" at 13.6V).
     const soc = b.soc_est != null ? b.soc_est : b.soc;
     let stTxt;
     if (b.soc_est != null) {
@@ -2119,8 +2119,8 @@ async function refresh() {
       stTxt = b.state ? b.state : "n/a";
     }
     const vTxt = b.voltage != null ? b.voltage.toFixed(2) : "—";
-    // segnale BM6: verde se l'ultima lettura GATT è fresca, rosso se il sensore
-    // non trasmette più (vedi gatt_age_s dal backend)
+    // BM6 signal: green while the last GATT read is fresh, red when the sensor
+    // has stopped transmitting (see gatt_age_s from the backend)
     let sigChip = "";
     if (b.signal_ok === true) {
       sigChip = " <span class='chip ok'>signal OK</span>";
@@ -2307,7 +2307,7 @@ async function refresh() {
       // smetti di seguire la barca appena l'utente muove la mappa
       window._nautilusMap.on("dragstart", () => { window._nautilusFollow = false; });
     } else {
-      // aggiornamenti successivi: tocco solo i valori, la mappa resta com'è
+      // subsequent updates: only values are touched, the map stays as is
       document.getElementById("gps-chip").className = "chip " + (g.valid ? "ok" : "warn");
       document.getElementById("gps-chip").textContent = g.valid ? "fix OK" : "no fix";
       document.getElementById("gps-lat").textContent = lat.toFixed(6);

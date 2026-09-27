@@ -1001,6 +1001,7 @@ _state = {
     "updated": None,
     "source_ok": False,
     "last_poll": None,
+    "tz_label": None,
     "gps_ok": False,
     "error": None,
 }
@@ -1541,6 +1542,8 @@ def fetch_devices():
     finally:
         _state["last_poll"] = datetime.now().strftime("%H:%M:%S")
         _state["updated"] = datetime.now().isoformat(timespec="seconds")
+        # timezone label shown next to every clock time in the UI
+        _state["tz_label"] = datetime.now().astimezone().strftime("UTC%z")
 
 
 def poll_loop():
@@ -1565,7 +1568,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.24.0"
+VERSION = "1.25.0"
 
 
 @app.route("/api/data")
@@ -1951,7 +1954,7 @@ async function refresh() {
   const st = document.getElementById("status");
   st.className = d.source_ok ? "" : "err";
   st.textContent = (d.source_ok ? "KNOT online" : "KNOT offline") +
-    " · updated " + (d.last_poll || "—");
+    " · updated " + (d.last_poll || "—") + " " + (d.tz_label || "");
   document.getElementById("version").textContent = d.version ? "v" + d.version : "";
 
   // ---- BM6 ----
@@ -2118,7 +2121,7 @@ async function refresh() {
           <a class="gmaps-link" id="gmaps-link" href="${gmaps}" target="_blank" rel="noopener">Open in Google Maps ↗</a>
           <a class="gmaps-link" id="gearth-link" href="${gearth}" target="_blank" rel="noopener">Open in Google Earth 3D ↗</a>
         </div>
-        <div class="foot"><div class="row">GPS fix at <span id="gps-fixtime">${esc(g.fix_time)}</span> (KNOT time)</div></div>`;
+        <div class="foot"><div class="row">GPS fix at <span id="gps-fixtime">${esc(g.fix_time)}</span> ${esc(d.tz_label || "")} (KNOT time)</div></div>`;
       window._nautilusMap = L.map("map", { zoomControl: true });
       // base OpenStreetMap + overlay nautico OpenSeaMap (seamarks: boe, fari, secche…)
       var osmAttr = "&co" + "py; OpenStreetMap";

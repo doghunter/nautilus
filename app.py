@@ -206,7 +206,9 @@ def _victron_devices():
                     items.append({"mac": mac,
                                   "key": str(it.get("key", "")).lower(),
                                   "serial": str(it.get("serial", "") or ""),
-                                  "puk": str(it.get("puk", "") or "")})
+                                  "puk": str(it.get("puk", "") or ""),
+                                  "bt_pin": str(it.get("bt_pin", "") or ""),
+                                  "part_number": str(it.get("part_number", "") or "")})
         except (ValueError, AttributeError):
             log.warning("VICTRON_DEVICES: JSON non valido, ignorato")
     # dedupe by MAC (runtime entry wins over env)
@@ -1681,7 +1683,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.26.2"
+VERSION = "1.27.0"
 
 
 @app.route("/api/data")
@@ -1892,6 +1894,8 @@ def api_settings_post():
                         "key": str(it.get("key", "") or "").lower()[:40],
                         "serial": str(it.get("serial", "") or "")[:30],
                         "puk": str(it.get("puk", "") or "")[:30],
+                        "bt_pin": str(it.get("bt_pin", "") or "")[:12],
+                        "part_number": str(it.get("part_number", "") or "")[:40],
                     })
                 _runtime_cfg["VICTRON_DEVICES"] = json.dumps(clean)
             else:
@@ -2744,11 +2748,34 @@ SETTINGS_HTML = """<!DOCTYPE html>
 
 <div class="card">
   <h2>Victron devices</h2>
-  <p class="hint">Encrypted Victron BLE advertisements (SmartSolar, SmartShunt). For each device: MAC and the advertisement key from VictronConnect (Product Info &rarr; Instant Readout). Alternatively fill serial + PUK: the key is derived and locked in automatically on the first successful decode. Values are saved on disk and survive restarts.</p>
+  <p class="hint">Encrypted Victron BLE advertisements (SmartSolar, SmartShunt). Click a device to view and edit its data; the encryption key comes from VictronConnect (Product Info &rarr; Instant Readout). Alternatively fill serial + PUK: the key is derived and locked in automatically on the first successful decode. Values are saved on disk and survive restarts.</p>
   <div id="vic-list" style="margin-top:10px"></div>
   <div class="row" style="margin-top:8px">
-    <button class="btn" style="margin-right:8px" onclick="vicAddRow()">Add device</button>
-    <button class="btn" onclick="saveVictron()">Save</button>
+    <button class="btn" onclick="vicOpen(-1)">+ Add device</button>
+  </div>
+
+  <div id="vic-modal" style="display:none;position:fixed;inset:0;background:#0009;z-index:50;align-items:center;justify-content:center" onclick="if(event.target===this)vicClose()">
+    <div style="background:#1e293b;border:1px solid #33415580;border-radius:12px;padding:18px;width:min(560px,92vw);max-height:88vh;overflow:auto">
+      <h3 style="margin:0 0 12px" id="vic-modal-title">Victron device</h3>
+      <div style="display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center">
+        <label style="font-size:.75rem;color:#94a3b8">MAC</label>
+        <input id="vm-mac" placeholder="e.g. F1:8A:86:DB:86:9E">
+        <label style="font-size:.75rem;color:#94a3b8">Part number</label>
+        <input id="vm-pn" placeholder="e.g. SHU050150200">
+        <label style="font-size:.75rem;color:#94a3b8">Encryption key</label>
+        <input id="vm-key" placeholder="VictronConnect \u2192 Product Info \u2192 Instant Readout (hex)">
+        <label style="font-size:.75rem;color:#94a3b8">Serial</label>
+        <input id="vm-serial" placeholder="e.g. HQ2602MZCRU">
+        <label style="font-size:.75rem;color:#94a3b8">PUK</label>
+        <input id="vm-puk" placeholder="e.g. BEA10864E821">
+        <label style="font-size:.75rem;color:#94a3b8">BT PIN</label>
+        <input id="vm-pin" placeholder="pairing PIN (VictronConnect)">
+      </div>
+      <div class="row" style="margin-top:14px;justify-content:flex-end">
+        <button class="btn" style="margin-right:8px" onclick="vicClose()">Cancel</button>
+        <button class="btn" onclick="vicSaveFromModal()">Save device</button>
+      </div>
+    </div>
   </div>
 </div>
   <button class="btn reset" style="margin-top:12px" onclick="clearBle()">Clear selection</button>
@@ -2769,47 +2796,71 @@ async function load() {
   vicRender(d.VICTRON_DEVICES || []);
 }
 
-function vicRow(d) {
-  d = d || {};
-  return `<div class="vic-row" style="border:1px solid var(--line,#33415580);border-radius:8px;padding:10px;margin-bottom:10px">
-    <div style="display:grid;grid-template-columns:110px 1fr auto;gap:8px;align-items:center;margin-bottom:6px">
-      <label style="font-size:.75rem;color:#94a3b8">MAC</label>
-      <input class="vic-mac" placeholder="e.g. F1:8A:86:DB:86:9E" value="${esc(d.mac || "")}">
-      <button class="btn" title="remove" onclick="this.closest('.vic-row').remove()">\u2715</button>
-    </div>
-    <div style="display:grid;grid-template-columns:110px 1fr;gap:8px;align-items:center;margin-bottom:6px">
-      <label style="font-size:.75rem;color:#94a3b8">Adv key</label>
-      <input class="vic-key" placeholder="from VictronConnect \u2192 Product Info \u2192 Instant Readout (hex)" value="${esc(d.key || "")}">
-    </div>
-    <div style="display:grid;grid-template-columns:110px 1fr 110px 1fr;gap:8px;align-items:center">
-      <label style="font-size:.75rem;color:#94a3b8">Serial</label>
-      <input class="vic-serial" placeholder="optional" value="${esc(d.serial || "")}">
-      <label style="font-size:.75rem;color:#94a3b8">PUK</label>
-      <input class="vic-puk" placeholder="optional" value="${esc(d.puk || "")}">
-    </div>
-  </div>`;
-}
+let _vicDevs = [];
 
 function vicRender(devs) {
-  document.getElementById("vic-list").innerHTML = (devs || []).map(vicRow).join("");
+  _vicDevs = devs || [];
+  const box = document.getElementById("vic-list");
+  if (!_vicDevs.length) {
+    box.innerHTML = "<p class='hint' style='margin:0'>No Victron devices configured. Click \u201c+ Add device\u201d to add one.</p>";
+    return;
+  }
+  box.innerHTML = _vicDevs.map((d, i) => `
+  <div onclick="vicOpen(${i})" style="display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid #33415580;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">
+    <div>
+      <div style="font-weight:600">${esc(d.part_number || "Victron device")}</div>
+      <div style="font-size:.75rem;color:#94a3b8">${esc(d.mac)}${d.serial ? " \u00b7 " + esc(d.serial) : ""}${d.key ? " \u00b7 key \u2713" : " \u00b7 no key"}</div>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button class="btn" title="remove" onclick="event.stopPropagation();vicRemove(${i})">\u2715</button>
+    </div>
+  </div>`).join("");
 }
 
-function vicAddRow() {
-  document.getElementById("vic-list").insertAdjacentHTML("beforeend", vicRow());
+function vicOpen(i) {
+  const d = i >= 0 ? _vicDevs[i] : {};
+  document.getElementById("vic-modal-title").textContent = (i >= 0 ? "Edit " : "New ") + (d.part_number || "Victron device");
+  document.getElementById("vm-mac").value = d.mac || "";
+  document.getElementById("vm-pn").value = d.part_number || "";
+  document.getElementById("vm-key").value = d.key || "";
+  document.getElementById("vm-serial").value = d.serial || "";
+  document.getElementById("vm-puk").value = d.puk || "";
+  document.getElementById("vm-pin").value = d.bt_pin || "";
+  document.getElementById("vic-modal").style.display = "flex";
+  document.getElementById("vic-modal").dataset.editIndex = i;
 }
 
-async function saveVictron() {
+function vicClose() {
+  document.getElementById("vic-modal").style.display = "none";
+}
+
+function vicRemove(i) {
+  _vicDevs.splice(i, 1);
+  vicPost();
+}
+
+function vicSaveFromModal() {
+  const i = parseInt(document.getElementById("vic-modal").dataset.editIndex, 10);
+  const d = {
+    mac: document.getElementById("vm-mac").value.trim(),
+    part_number: document.getElementById("vm-pn").value.trim(),
+    key: document.getElementById("vm-key").value.trim(),
+    serial: document.getElementById("vm-serial").value.trim(),
+    puk: document.getElementById("vm-puk").value.trim(),
+    bt_pin: document.getElementById("vm-pin").value.trim(),
+  };
+  if (!d.mac) { alert("MAC is required"); return; }
+  if (i >= 0) _vicDevs[i] = d; else _vicDevs.push(d);
+  vicPost();
+  vicClose();
+}
+
+async function vicPost() {
   const msg = document.getElementById("msg");
-  const devs = [...document.querySelectorAll("#vic-list .vic-row")].map(r => ({
-    mac: r.querySelector(".vic-mac").value.trim(),
-    key: r.querySelector(".vic-key").value.trim(),
-    serial: r.querySelector(".vic-serial").value.trim(),
-    puk: r.querySelector(".vic-puk").value.trim(),
-  })).filter(d => d.mac);
   const r = await fetch("api/settings", { method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({VICTRON_DEVICES: devs.length ? devs : null}) });
+    body: JSON.stringify({VICTRON_DEVICES: _vicDevs.length ? _vicDevs : null}) });
   const d = await r.json();
-  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Victron devices saved \u2713"; }
+  if (r.ok) { msg.className = "msg ok"; msg.textContent = "Victron devices saved \u2713"; vicRender(d.VICTRON_DEVICES || []); }
   else { msg.className = "msg err"; msg.textContent = d.error || "error"; }
 }
 async function save() {

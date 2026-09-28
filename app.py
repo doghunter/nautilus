@@ -1988,7 +1988,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.34.0"
+VERSION = "1.34.1"
 
 
 @app.route("/api/data")
@@ -2776,8 +2776,6 @@ async function refresh() {
       ${ks.cpu_load != null ? `
       <div class="metrics">
         <div class="metric"><div class="k">RouterOS</div><div class="v" style="font-size:.9rem">${esc(ks.version || "—")}</div></div>
-        <div class="metric"><div class="k">Serial No.</div><div class="v" style="font-size:.85rem">${esc(ks.serial || "—")}</div></div>
-        <div class="metric"><div class="k">ICCID / Operator</div><div class="v" style="font-size:.75rem">${esc(ks.iccid || "—")} <small>${esc(ks.operator || "")}${ks.band ? " · " + esc(ks.band) : ""}</small></div></div>
         <div class="metric"><div class="k">CPU load</div><div class="v">${ks.cpu_load}%</div></div>
         <div class="metric"><div class="k">Memory free</div><div class="v">${ks.free_memory != null ? fmtB(ks.free_memory) : "—"} <small>of ${ks.total_memory != null ? fmtB(ks.total_memory) : "—"}</small></div></div>
         <div class="metric"><div class="k">Disk free</div><div class="v">${ks.free_hdd != null ? fmtB(ks.free_hdd) : "—"} <small>of ${ks.total_hdd != null ? fmtB(ks.total_hdd) : "—"}</small></div></div>
@@ -2794,7 +2792,10 @@ async function refresh() {
         <div class="metric"><div class="k">Total offline today</div><div class="v">${fmtDur(o.today.seconds)}</div></div>
         <div class="metric"><div class="k">Last gap</div><div class="v" style="font-size:.9rem">${o.last ? esc(o.last.start.slice(11,16)) + " · " + fmtDur(o.last.duration_s) : "—"}</div></div>
       </div>`; })() : ""}
-      <div class="foot"><div class="row">
+      <div class="foot">
+        <div class="row">Serial No.: ${esc(ks.serial || "—")}</div>
+        <div class="row">ICCID: ${esc(ks.iccid || "—")}${ks.operator ? " · " + esc(ks.operator) : ""}${ks.band ? " · " + esc(ks.band.split(" ")[0]) : ""}</div>
+        <div class="row">
         ${ks.tunnel_up
           ? "Handshake fresh, watchdog idle"
           : "No handshake for " + (ageMin != null ? ageMin + " min" : "unknown") + " — KNOT-side watchdog should react (LTE reset, then reboot)"}

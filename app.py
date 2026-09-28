@@ -1748,7 +1748,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.30.1"
+VERSION = "1.30.2"
 
 
 @app.route("/api/data")
@@ -3129,7 +3129,7 @@ TRACK_HTML = """<!DOCTYPE html>
 <body>
 <header>
   <h1>⚓ Track history</h1>
-  <a class="back" href="..">← Dashboard</a>
+  <a class="back" href="./">&#8592; Dashboard</a>
 </header>
 <div class="controls">
   <div><label>From</label><input type="date" id="d-from"></div>
@@ -3270,7 +3270,7 @@ KNOT_LOGS_HTML = """<!DOCTYPE html>
 <body>
 <header>
   <h1>&#128225; KNOT logs · {{BOAT}}</h1>
-  <a class="back" href="..">← Dashboard</a>
+  <a class="back" href="./">&#8592; Dashboard</a>
 </header>
 <div class="controls">
   <div class="grp">

@@ -52,7 +52,7 @@ import os
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from flask import Flask, Response, jsonify, request
@@ -624,8 +624,12 @@ def _solar_db():
     con.execute("CREATE TABLE IF NOT EXISTS load_samples ("
                 "ts TEXT NOT NULL, watt REAL NOT NULL, source TEXT)")
     con.execute("CREATE TABLE IF NOT EXISTS data_usage ("
-                "day TEXT NOT NULL PRIMARY KEY, rx INTEGER NOT NULL, "
-                "tx INTEGER NOT NULL)")
+               "day TEXT NOT NULL PRIMARY KEY, rx INTEGER NOT NULL, "
+               "tx INTEGER NOT NULL)")
+    con.execute("CREATE TABLE IF NOT EXISTS outages ("
+               "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+               "day TEXT NOT NULL, start TEXT NOT NULL, "
+               "end TEXT, duration_s INTEGER)")
     con.commit()
     return con
 
@@ -1797,6 +1801,72 @@ def fetch_devices():
         _state["tz_label"] = datetime.now().astimezone().strftime("UTC%z")
 
 
+def track_outage(tunnel_up):
+    """Records coverage gaps (tunnel down) into the outages table.
+
+    Opens a row when the tunnel goes down, closes it when it comes back.
+    An outage still open at midnight keeps running until recovery.
+    """
+    try:
+        con = _solar_db()
+        now = datetime.now()
+        row = con.execute(
+            "SELECT id, start FROM outages WHERE end IS NULL "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        if not tunnel_up and row is None:
+            con.execute(
+                "INSERT INTO outages (day, start) VALUES (?, ?)",
+                (now.date().isoformat(), now.isoformat(timespec="seconds")))
+            con.commit()
+            log.info("Coverage gap started at %s", now.strftime("%H:%M:%S"))
+        elif tunnel_up and row is not None:
+            start = datetime.fromisoformat(row[1])
+            con.execute(
+                "UPDATE outages SET end = ?, duration_s = ? WHERE id = ?",
+                (now.isoformat(timespec="seconds"),
+                 int((now - start).total_seconds()), row[0]))
+            con.commit()
+            log.info("Coverage gap ended: %s s", int((now - start).total_seconds()))
+        con.close()
+    except Exception as exc:
+        log.warning("Outage tracking failed: %s", exc)
+
+
+def outage_summary():
+    """Today's and yesterday's outage count + total seconds, last 7 days."""
+    try:
+        con = _solar_db()
+        out = {"today": {"count": 0, "seconds": 0},
+               "yesterday": {"count": 0, "seconds": 0}, "week": []}
+        today = datetime.now().date()
+        for i, label in ((0, "today"), (1, "yesterday")):
+            day = (today - timedelta(days=i)).isoformat()
+            row = con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(duration_s), 0) FROM outages "
+                "WHERE day = ?", (day,)).fetchone()
+            out[label] = {"count": row[0], "seconds": int(row[1] or 0)}
+        # last 7 days for the mini history
+        for i in range(6, -1, -1):
+            day = (today - timedelta(days=i)).isoformat()
+            row = con.execute(
+                "SELECT COUNT(*), COALESCE(SUM(duration_s), 0) FROM outages "
+                "WHERE day = ?", (day,)).fetchone()
+            out["week"].append({"day": day, "count": row[0],
+                                "seconds": int(row[1] or 0)})
+        # currently open gap?
+        row = con.execute("SELECT start FROM outages WHERE end IS NULL "
+                         "ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            out["open_since"] = row[0]
+        con.close()
+        return out
+    except Exception as exc:
+        log.warning("Outage summary failed: %s", exc)
+        return {"today": {"count": 0, "seconds": 0},
+                "yesterday": {"count": 0, "seconds": 0}, "week": [],
+                "error": str(exc)}
+
+
 def poll_loop():
     global _knot_tunnel_was_up
     while True:
@@ -1808,6 +1878,7 @@ def poll_loop():
         # replay KNOT-side buffered GPS points only when the tunnel is alive;
         # force a read right after a coverage gap (tunnel came back up)
         tunnel_up = (_state.get("knot_status") or {}).get("tunnel_up")
+        track_outage(bool(tunnel_up))
         if tunnel_up:
             replay_gps_buffer(force=not _knot_tunnel_was_up)
         _knot_tunnel_was_up = bool(tunnel_up)
@@ -1823,7 +1894,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.32.0"
+VERSION = "1.33.0"
 
 
 @app.route("/api/data")
@@ -1832,6 +1903,7 @@ VERSION = "1.32.0"
 def api_data():
     _state["version"] = VERSION
     _state["data_usage"] = data_usage_summary()
+    _state["outages"] = outage_summary()
     return jsonify(_state)
 
 
@@ -2614,6 +2686,18 @@ async function refresh() {
         <div class="metric"><div class="k">Memory free</div><div class="v">${ks.free_memory != null ? fmtB(ks.free_memory) : "—"} <small>of ${ks.total_memory != null ? fmtB(ks.total_memory) : "—"}</small></div></div>
         <div class="metric"><div class="k">Disk free</div><div class="v">${ks.free_hdd != null ? fmtB(ks.free_hdd) : "—"} <small>of ${ks.total_hdd != null ? fmtB(ks.total_hdd) : "—"}</small></div></div>
       </div>` : ""}
+      ${d.outages ? (() => {
+        const o = d.outages;
+        const fmtDur = s => s >= 3600 ? Math.floor(s/3600) + "h " + Math.round(s%3600/60) + "m"
+          : s >= 60 ? Math.round(s/60) + "m" : s + "s";
+        const open = o.open_since
+          ? ` · <span style="color:#f87171">gap open since ${esc(o.open_since.slice(11,16))}</span>` : "";
+        return `
+      <div class="metrics">
+        <div class="metric"><div class="k">Coverage gaps today</div><div class="v">${o.today.count}${open}</div></div>
+        <div class="metric"><div class="k">Total offline today</div><div class="v">${fmtDur(o.today.seconds)}</div></div>
+        <div class="metric"><div class="k">Gaps yesterday</div><div class="v">${o.yesterday.count} · ${fmtDur(o.yesterday.seconds)}</div></div>
+      </div>`; })() : ""}
       <div class="foot"><div class="row">
         ${ks.tunnel_up
           ? "Handshake fresh, watchdog idle"

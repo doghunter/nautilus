@@ -1748,7 +1748,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.30.2"
+VERSION = "1.30.3"
 
 
 @app.route("/api/data")
@@ -2107,7 +2107,12 @@ def api_stats_totals():
 @app.route("/nautilus/knot-logs")
 @app.route(URL_PREFIX_ALIAS + "/knot-logs")
 def knot_logs_page():
-    return KNOT_LOGS_HTML.replace("{{BOAT}}", BOAT_NAME)
+    tz = datetime.now().astimezone().utcoffset()
+    tz_h = int(tz.total_seconds() // 3600) if tz else 0
+    tz_label = f"UTC{tz_h:+d}" if tz_h else "UTC"
+    return (KNOT_LOGS_HTML
+            .replace("{{BOAT}}", BOAT_NAME)
+            .replace("{{TZ}}", tz_label))
 
 
 @app.route("/track")
@@ -3291,10 +3296,11 @@ KNOT_LOGS_HTML = """<!DOCTYPE html>
   </div>
 </div>
 <p class="hint">Each archive is a full snapshot of the KNOT system log at download time
-(throttled, see Settings → GPS buffer log read). Rows appear newest-first here.</p>
+(throttled, see Settings → GPS buffer log read). Rows appear newest-first here.
+All times are local ({{TZ}}).</p>
 <div class="card">
   <table id="tbl">
-    <thead><tr><th>Time</th><th>Topics</th><th>Message</th></tr></thead>
+    <thead><tr><th>Time ({{TZ}})</th><th>Topics</th><th>Message</th></tr></thead>
     <tbody></tbody>
   </table>
 </div>
@@ -3307,8 +3313,9 @@ const fmtSize = b => b >= 1048576 ? (b/1048576).toFixed(1) + " MB" : (b/1024).to
 async function loadFiles(sel) {
   const d = await (await fetch("api/knot/logs")).json();
   const f = document.getElementById("file");
+  const tz = "{{TZ}}";
   f.innerHTML = (d.files || []).map(x =>
-    `<option value="${x.file}">${x.file.slice(7, 9)}:${x.file.slice(9, 11)}:${x.file.slice(11, 13)} · ${fmtSize(x.size)}</option>`).join("");
+    `<option value="${x.file}">${x.file.slice(6, 8)}/${x.file.slice(4, 6)} ${x.file.slice(9, 11)}:${x.file.slice(11, 13)}:${x.file.slice(13, 15)} ${tz} · ${fmtSize(x.size)}</option>`).join("");
   if (sel) f.value = sel;
   if (f.value) loadRows(f.value);
 }

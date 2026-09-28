@@ -1748,7 +1748,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.30.0"
+VERSION = "1.30.1"
 
 
 @app.route("/api/data")
@@ -2101,6 +2101,13 @@ def api_stats_totals():
     except Exception as exc:
         log.warning("stats totals: %s", exc)
         return jsonify({"error": "stats unavailable"}), 503
+
+
+@app.route("/knot-logs")
+@app.route("/nautilus/knot-logs")
+@app.route(URL_PREFIX_ALIAS + "/knot-logs")
+def knot_logs_page():
+    return KNOT_LOGS_HTML.replace("{{BOAT}}", BOAT_NAME)
 
 
 @app.route("/track")
@@ -2524,7 +2531,7 @@ async function refresh() {
         ${ks.tunnel_up
           ? "Handshake fresh, watchdog idle"
           : "No handshake for " + (ageMin != null ? ageMin + " min" : "unknown") + " — KNOT-side watchdog should react (LTE reset, then reboot)"}
-        · <a href="api/knot/logs" target="_blank" style="color:#38bdf8">KNOT log archive</a>
+        · <a href="knot-logs" style="color:#38bdf8">KNOT logs</a>
       </div></div>`;
   }
 }
@@ -3214,6 +3221,129 @@ async function loadTrack() {
   }
 }
 loadTrack();
+</script>
+</body>
+</html>
+"""
+
+KNOT_LOGS_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cg stroke='%2338bdf8' stroke-width='5' stroke-linecap='round' fill='none'%3E%3Ccircle cx='32' cy='15' r='6'/%3E%3Cline x1='32' y1='21' x2='32' y2='52'/%3E%3Cline x1='20' y1='30' x2='44' y2='30'/%3E%3Cpath d='M 14 40 C 14 55, 50 55, 50 40'/%3E%3Cline x1='14' y1='40' x2='20' y2='44'/%3E%3Cline x1='50' y1='40' x2='44' y2='44'/%3E%3C/g%3E%3C/svg%3E">
+<title>KNOT logs · {{BOAT}}</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", system-ui, sans-serif;
+         min-height: 100vh; padding: 20px; }
+  header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
+  h1 { font-size: 1.3rem; color: #38bdf8; letter-spacing: .5px; }
+  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid #334155;
+           padding: 5px 10px; border-radius: 8px; background: #1e293b; }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 14px;
+              background: #1e293b; padding: 14px; border-radius: 12px; border: 1px solid #334155; }
+  .controls label { display: block; font-size: .66rem; color: #64748b; text-transform: uppercase;
+                    letter-spacing: .5px; margin-bottom: 4px; }
+  .controls select, .controls input { font: inherit; font-size: .85rem; padding: 6px 8px;
+           border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; }
+  .controls .grp { display: flex; flex-direction: column; }
+  .hint { color: #64748b; font-size: .75rem; margin-bottom: 12px; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  th { text-align: left; color: #64748b; font-size: .66rem; text-transform: uppercase;
+       letter-spacing: .5px; padding: 10px 12px; border-bottom: 1px solid #334155; }
+  td { padding: 7px 12px; border-bottom: 1px solid #172033; vertical-align: top;
+       font-family: ui-monospace, Consolas, monospace; }
+  td.time { white-space: nowrap; color: #94a3b8; }
+  td.topics { white-space: nowrap; color: #64748b; }
+  tr.warn td { background: #2a2302; }
+  tr.warn td.topics { color: #f59e0b; }
+  tr.err td { background: #2d0a0a; }
+  tr.err td.topics { color: #ef4444; }
+  .pill { display: inline-block; font-size: .68rem; padding: 2px 9px; border-radius: 999px;
+          background: #1e3a5f; color: #7dd3fc; }
+  .count { color: #64748b; font-size: .78rem; margin: 10px 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128225; KNOT logs · {{BOAT}}</h1>
+  <a class="back" href="..">← Dashboard</a>
+</header>
+<div class="controls">
+  <div class="grp">
+    <label>Archive (every log download)</label>
+    <select id="file"></select>
+  </div>
+  <div class="grp">
+    <label>Filter text</label>
+    <input id="q" placeholder="es. error, reboot, lte…">
+  </div>
+  <div class="grp">
+    <label>Show</label>
+    <select id="lvl">
+      <option value="all">all rows</option>
+      <option value="warn">warnings + errors only</option>
+      <option value="err">errors only</option>
+    </select>
+  </div>
+</div>
+<p class="hint">Each archive is a full snapshot of the KNOT system log at download time
+(throttled, see Settings → GPS buffer log read). Rows appear newest-first here.</p>
+<div class="card">
+  <table id="tbl">
+    <thead><tr><th>Time</th><th>Topics</th><th>Message</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+<p class="count" id="count"></p>
+<script>
+const esc = s => { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; };
+let ROWS = [];
+const fmtSize = b => b >= 1048576 ? (b/1048576).toFixed(1) + " MB" : (b/1024).toFixed(0) + " KB";
+
+async function loadFiles(sel) {
+  const d = await (await fetch("api/knot/logs")).json();
+  const f = document.getElementById("file");
+  f.innerHTML = (d.files || []).map(x =>
+    `<option value="${x.file}">${x.file.slice(7, 9)}:${x.file.slice(9, 11)}:${x.file.slice(11, 13)} · ${fmtSize(x.size)}</option>`).join("");
+  if (sel) f.value = sel;
+  if (f.value) loadRows(f.value);
+}
+
+async function loadRows(name) {
+  const d = await (await fetch("api/knot/logs?file=" + encodeURIComponent(name))).json();
+  ROWS = (d.rows || []).slice().reverse();   // newest first
+  render();
+}
+
+function render() {
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  const lvl = document.getElementById("lvl").value;
+  const rows = ROWS.filter(r => {
+    if (q && !((r.message || "") + " " + (r.topics || "")).toLowerCase().includes(q)) return false;
+    const t = (r.topics || "");
+    if (lvl === "warn" && !(t.includes("warning") || t.includes("error"))) return false;
+    if (lvl === "err" && !t.includes("error")) return false;
+    return true;
+  });
+  const tb = document.querySelector("#tbl tbody");
+  tb.innerHTML = rows.map(r => {
+    const t = (r.topics || "");
+    const cls = t.includes("error") ? "err" : (t.includes("warning") ? "warn" : "");
+    return `<tr class="${cls}"><td class="time">${esc(r.time || "")}</td>` +
+      `<td class="topics">${esc(t)}</td><td>${esc(r.message || "")}</td></tr>`;
+  }).join("") || `<tr><td colspan="3" style="color:#64748b;padding:16px">No rows match.</td></tr>`;
+  document.getElementById("count").textContent =
+    `${rows.length} of ${ROWS.length} rows shown`;
+}
+
+document.getElementById("file").addEventListener("change", e => loadRows(e.target.value));
+document.getElementById("q").addEventListener("input", render);
+document.getElementById("lvl").addEventListener("change", render);
+loadFiles();
 </script>
 </body>
 </html>

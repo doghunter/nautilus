@@ -1582,11 +1582,22 @@ def fetch_knot_status():
             auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
             timeout=10,
         )
-        uptime = ""
+        res = r2.json()
+        uptime = res.get("uptime", "")
         try:
-            uptime = r2.json().get("uptime", "")
-        except Exception:
-            pass
+            cpu_load = int(res.get("cpu-load", 0))
+        except (TypeError, ValueError):
+            cpu_load = None
+        try:
+            free_mem = int(res.get("free-memory", 0))
+            total_mem = int(res.get("total-memory", 0))
+        except (TypeError, ValueError):
+            free_mem = total_mem = None
+        try:
+            free_hdd = int(res.get("free-hdd-space", 0))
+            total_hdd = int(res.get("total-hdd-space", 0))
+        except (TypeError, ValueError):
+            free_hdd = total_hdd = None
         _state["knot_status"] = {
             "handshake_age_s": hs_age,
             "handshake_raw": p.get("last-handshake", ""),
@@ -1596,6 +1607,12 @@ def fetch_knot_status():
             "tx_bytes": int(p.get("tx", 0) or 0),
             "endpoint": p.get("current-endpoint-address", ""),
             "uptime": uptime,
+            "version": res.get("version", ""),
+            "cpu_load": cpu_load,
+            "free_memory": free_mem,
+            "total_memory": total_mem,
+            "free_hdd": free_hdd,
+            "total_hdd": total_hdd,
         }
     except Exception as exc:
         log.warning("Knot status fallito: %s", exc)
@@ -1731,7 +1748,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.29.1"
+VERSION = "1.30.0"
 
 
 @app.route("/api/data")
@@ -1848,6 +1865,63 @@ def api_load_daily():
     except Exception as exc:
         log.warning("load daily: %s", exc)
         return jsonify({"error": "load history unavailable"}), 503
+
+
+@app.route("/api/knot/logs")
+@app.route("/nautilus/api/knot/logs")
+@app.route(URL_PREFIX_ALIAS + "/api/knot/logs")
+def api_knot_logs():
+    """KNOT log archives (see replay_gps_buffer: every /rest/log download is
+    archived on the server).
+
+    GET without params: list of archived files with size/count.
+    ?file=<name>: content of one archive (raw JSON rows, capped).
+    ?gbuf: last N GBUF lines from data/gpsbuf-archive.log (?gbuf=50 default,
+    max 500), newest last.
+    """
+    try:
+        if "gbuf" in request.args:
+            try:
+                n = min(500, max(1, int(request.args.get("gbuf", 50))))
+            except ValueError:
+                n = 50
+            out = []
+            if os.path.exists(GPSBUF_ARCHIVE):
+                with open(GPSBUF_ARCHIVE, "r") as f:
+                    lines = [l for l in f.read().splitlines() if l.strip()]
+                for l in lines[-n:]:
+                    try:
+                        out.append(json.loads(l))
+                    except ValueError:
+                        continue
+            return jsonify({"count": len(out), "lines": out})
+        if "file" in request.args:
+            name = os.path.basename(request.args.get("file", ""))
+            if not name or not name.endswith(".json"):
+                return jsonify({"error": "invalid file"}), 400
+            path = os.path.join(os.path.dirname(GPSBUF_ARCHIVE),
+                                "knot-log-archive", name)
+            if not os.path.isfile(path):
+                return jsonify({"error": "not found"}), 404
+            with open(path, "r") as f:
+                rows = json.load(f)
+            return jsonify({"file": name, "count": len(rows), "rows": rows})
+        rawdir = os.path.join(os.path.dirname(GPSBUF_ARCHIVE),
+                              "knot-log-archive")
+        files = []
+        if os.path.isdir(rawdir):
+            for fn in sorted(os.listdir(rawdir), reverse=True):
+                p = os.path.join(rawdir, fn)
+                if fn.endswith(".json") and os.path.isfile(p):
+                    files.append({"file": fn,
+                                  "size": os.path.getsize(p),
+                                  "mtime": datetime.fromtimestamp(
+                                      os.path.getmtime(p)).isoformat(
+                                          timespec="seconds")})
+        return jsonify({"count": len(files), "files": files})
+    except Exception as exc:
+        log.warning("knot logs api: %s", exc)
+        return jsonify({"error": "unavailable"}), 503
 
 
 @app.route("/api/settings")
@@ -2439,9 +2513,19 @@ async function refresh() {
         <div class="metric"><div class="k">Tunnel rx</div><div class="v">${fmtB(ks.rx_bytes)}</div></div>
         <div class="metric"><div class="k">Tunnel tx</div><div class="v">${fmtB(ks.tx_bytes)}</div></div>
       </div>
-      <div class="foot"><div class="row">${ks.tunnel_up
-        ? "Handshake fresh, watchdog idle"
-        : "No handshake for " + (ageMin != null ? ageMin + " min" : "unknown") + " — KNOT-side watchdog should react (LTE reset, then reboot)"}</div></div>`;
+      ${ks.cpu_load != null ? `
+      <div class="metrics">
+        <div class="metric"><div class="k">RouterOS</div><div class="v" style="font-size:.9rem">${esc(ks.version || "—")}</div></div>
+        <div class="metric"><div class="k">CPU load</div><div class="v">${ks.cpu_load}%</div></div>
+        <div class="metric"><div class="k">Memory free</div><div class="v">${ks.free_memory != null ? fmtB(ks.free_memory) : "—"} <small>of ${ks.total_memory != null ? fmtB(ks.total_memory) : "—"}</small></div></div>
+        <div class="metric"><div class="k">Disk free</div><div class="v">${ks.free_hdd != null ? fmtB(ks.free_hdd) : "—"} <small>of ${ks.total_hdd != null ? fmtB(ks.total_hdd) : "—"}</small></div></div>
+      </div>` : ""}
+      <div class="foot"><div class="row">
+        ${ks.tunnel_up
+          ? "Handshake fresh, watchdog idle"
+          : "No handshake for " + (ageMin != null ? ageMin + " min" : "unknown") + " — KNOT-side watchdog should react (LTE reset, then reboot)"}
+        · <a href="api/knot/logs" target="_blank" style="color:#38bdf8">KNOT log archive</a>
+      </div></div>`;
   }
 }
 

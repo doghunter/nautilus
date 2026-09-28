@@ -1748,7 +1748,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.30.3"
+VERSION = "1.30.4"
 
 
 @app.route("/api/data")
@@ -2860,7 +2860,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <span><input id="GATT_POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
   </div>
   <div class="row">
-    <label>GPS buffer log read<small>how often the KNOT log is downloaded for the no-coverage GPS buffer (also read right after a coverage gap)</small></label>
+    <label>GPS buffer log read<small>how often the KNOT log is downloaded (read right after a coverage gap)</small></label>
     <span><input id="GPSBUF_POLL_SECONDS" type="number" min="60" max="86400"><span class="unit">s</span></span>
   </div>
 </div>

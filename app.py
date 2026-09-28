@@ -476,6 +476,7 @@ def save_position(gps, buffered=False):
 _gpsbuf_last_ts = None    # newest gpsbuf line already replayed (log .id time)
 _gpsbuf_last_fetch = None # last successful /rest/log download (unix time)
 _knot_tunnel_was_up = None  # previous poll's tunnel state (gap detection)
+_knot_serial = None  # KNOT board serial (static, read once)
 
 
 def _parse_gpsbuf_time(t):
@@ -1667,6 +1668,31 @@ def fetch_knot_status():
             timeout=10,
         )
         res = r2.json()
+        # board serial number: static, read once per process lifetime
+        global _knot_serial
+        if _knot_serial is None:
+            try:
+                r3 = requests.get(
+                    f"http://{KNOT_HOST}/rest/system/routerboard",
+                    auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                    timeout=10)
+                _knot_serial = r3.json().get("serial-number", "") or ""
+            except Exception:
+                _knot_serial = ""
+        # SIM info: ICCID + operator via LTE monitor (once)
+        iccid = operator = band = None
+        try:
+            r4 = requests.post(
+                f"http://{KNOT_HOST}/rest/interface/lte/monitor",
+                json={"numbers": "lte1", "once": ""},
+                auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                timeout=15)
+            m = (r4.json() or [{}])[0]
+            iccid = m.get("iccid") or None
+            operator = m.get("current-operator") or None
+            band = m.get("primary-band") or None
+        except Exception:
+            pass
         uptime = res.get("uptime", "")
         try:
             cpu_load = int(res.get("cpu-load", 0))
@@ -1693,6 +1719,10 @@ def fetch_knot_status():
             "uptime": uptime,
             "version": res.get("version", ""),
             "cpu_load": cpu_load,
+            "serial": _knot_serial,
+            "iccid": iccid,
+            "operator": operator,
+            "band": band,
             "free_memory": free_mem,
             "total_memory": total_mem,
             "free_hdd": free_hdd,
@@ -1958,7 +1988,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.33.1"
+VERSION = "1.34.0"
 
 
 @app.route("/api/data")
@@ -2746,6 +2776,8 @@ async function refresh() {
       ${ks.cpu_load != null ? `
       <div class="metrics">
         <div class="metric"><div class="k">RouterOS</div><div class="v" style="font-size:.9rem">${esc(ks.version || "—")}</div></div>
+        <div class="metric"><div class="k">Serial No.</div><div class="v" style="font-size:.85rem">${esc(ks.serial || "—")}</div></div>
+        <div class="metric"><div class="k">ICCID / Operator</div><div class="v" style="font-size:.75rem">${esc(ks.iccid || "—")} <small>${esc(ks.operator || "")}${ks.band ? " · " + esc(ks.band) : ""}</small></div></div>
         <div class="metric"><div class="k">CPU load</div><div class="v">${ks.cpu_load}%</div></div>
         <div class="metric"><div class="k">Memory free</div><div class="v">${ks.free_memory != null ? fmtB(ks.free_memory) : "—"} <small>of ${ks.total_memory != null ? fmtB(ks.total_memory) : "—"}</small></div></div>
         <div class="metric"><div class="k">Disk free</div><div class="v">${ks.free_hdd != null ? fmtB(ks.free_hdd) : "—"} <small>of ${ks.total_hdd != null ? fmtB(ks.total_hdd) : "—"}</small></div></div>

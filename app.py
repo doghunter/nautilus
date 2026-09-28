@@ -1946,7 +1946,8 @@ def outage_summary():
         row = con.execute("SELECT start, duration_s FROM outages "
                           "WHERE end IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
         if row:
-            out["last"] = {"start": row[0], "duration_s": int(row[1] or 0)}
+            out["last"] = {"start": row[0], "duration_s": int(row[1] or 0),
+                           "today": row[0][:10] == today.isoformat()}
         # currently open gap?
         row = con.execute("SELECT start FROM outages WHERE end IS NULL "
                          "ORDER BY id DESC LIMIT 1").fetchone()
@@ -1988,7 +1989,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.34.1"
+VERSION = "1.34.2"
 
 
 @app.route("/api/data")
@@ -2790,7 +2791,7 @@ async function refresh() {
       <div class="metrics">
         <div class="metric"><div class="k">Coverage gaps today</div><div class="v">${o.today.count}${open}</div></div>
         <div class="metric"><div class="k">Total offline today</div><div class="v">${fmtDur(o.today.seconds)}</div></div>
-        <div class="metric"><div class="k">Last gap</div><div class="v" style="font-size:.9rem">${o.last ? esc(o.last.start.slice(11,16)) + " · " + fmtDur(o.last.duration_s) : "—"}</div></div>
+        <div class="metric"><div class="k">Last gap</div><div class="v" style="font-size:.9rem">${o.last ? (o.last.today ? "" : esc(o.last.start.slice(8,10)) + "/" + esc(o.last.start.slice(5,7)) + " ") + esc(o.last.start.slice(11,16)) + " · " + fmtDur(o.last.duration_s) : "—"}</div></div>
       </div>`; })() : ""}
       <div class="foot">
         <div class="row">Serial No.: ${esc(ks.serial || "—")}</div>

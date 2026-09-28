@@ -537,6 +537,7 @@ def replay_gps_buffer(force=False):
         rows = r.json()
         _gpsbuf_last_fetch = now
         _gpsbuf_cleanup_archives()
+        track_lte_resets(rows)
     except Exception as exc:
         log.warning("GPS buffer read failed: %s", exc)
         return
@@ -629,7 +630,11 @@ def _solar_db():
     con.execute("CREATE TABLE IF NOT EXISTS outages ("
                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
                "day TEXT NOT NULL, start TEXT NOT NULL, "
-               "end TEXT, duration_s INTEGER)")
+               "end TEXT, duration_s INTEGER, source TEXT DEFAULT 'tunnel')")
+    # older installs created the table without the source column
+    cols = [r[1] for r in con.execute("PRAGMA table_info(outages)")]
+    if "source" not in cols:
+        con.execute("ALTER TABLE outages ADD COLUMN source TEXT DEFAULT 'tunnel'")
     con.commit()
     return con
 
@@ -1832,6 +1837,60 @@ def track_outage(tunnel_up):
         log.warning("Outage tracking failed: %s", exc)
 
 
+def track_lte_resets(rows):
+    """Records LTE resets from the KNOT log rows as short outages.
+
+    The KNOT logs 'lte1 forced reconfiguration...' (lte,error) when the link
+    drops and 'lte1 IPv4: ...' (lte,info) when it is back. These gaps are
+    1-2 minutes long - shorter than the poll cadence - so the tunnel-based
+    tracker would miss them. Deduplicated on start time across downloads.
+    """
+    try:
+        events = []
+        for row in rows:
+            msg = row.get("message", "")
+            t = row.get("time", "")
+            if "forced reconfiguration" in msg:
+                events.append((t, msg, "start"))
+            elif msg.startswith("lte1 IPv4"):
+                events.append((t, msg, "end"))
+        if not events:
+            return
+        con = _solar_db()
+        known = {r[0] for r in con.execute(
+            "SELECT start FROM outages WHERE source = 'lte'")}
+        open_start = None
+        for t, msg, kind in events:
+            if kind == "start":
+                if t not in known:
+                    day = t[:10] if len(t) >= 10 else datetime.now().date().isoformat()
+                    con.execute(
+                        "INSERT INTO outages (day, start, source) VALUES (?, ?, 'lte')",
+                        (day, t))
+                    known.add(t)
+                    log.info("LTE reset recorded at %s", t)
+                open_start = t
+            elif kind == "end" and open_start is not None:
+                try:
+                    start_dt = datetime.fromisoformat(open_start)
+                    end_dt = datetime.fromisoformat(t)
+                    duration = int((end_dt - start_dt).total_seconds())
+                    if duration < 0:
+                        duration = 0
+                except ValueError:
+                    duration = None
+                if duration is not None:
+                    con.execute(
+                        "UPDATE outages SET end = ?, duration_s = ? "
+                        "WHERE start = ? AND source = 'lte' AND end IS NULL",
+                        (t, duration, open_start))
+                open_start = None
+        con.commit()
+        con.close()
+    except Exception as exc:
+        log.warning("LTE reset tracking failed: %s", exc)
+
+
 def outage_summary():
     """Today's and yesterday's outage count + total seconds, last 7 days."""
     try:
@@ -1853,6 +1912,11 @@ def outage_summary():
                 "WHERE day = ?", (day,)).fetchone()
             out["week"].append({"day": day, "count": row[0],
                                 "seconds": int(row[1] or 0)})
+        # last completed gap
+        row = con.execute("SELECT start, duration_s FROM outages "
+                          "WHERE end IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            out["last"] = {"start": row[0], "duration_s": int(row[1] or 0)}
         # currently open gap?
         row = con.execute("SELECT start FROM outages WHERE end IS NULL "
                          "ORDER BY id DESC LIMIT 1").fetchone()
@@ -1894,7 +1958,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.33.0"
+VERSION = "1.33.1"
 
 
 @app.route("/api/data")
@@ -2696,7 +2760,7 @@ async function refresh() {
       <div class="metrics">
         <div class="metric"><div class="k">Coverage gaps today</div><div class="v">${o.today.count}${open}</div></div>
         <div class="metric"><div class="k">Total offline today</div><div class="v">${fmtDur(o.today.seconds)}</div></div>
-        <div class="metric"><div class="k">Gaps yesterday</div><div class="v">${o.yesterday.count} · ${fmtDur(o.yesterday.seconds)}</div></div>
+        <div class="metric"><div class="k">Last gap</div><div class="v" style="font-size:.9rem">${o.last ? esc(o.last.start.slice(11,16)) + " · " + fmtDur(o.last.duration_s) : "—"}</div></div>
       </div>`; })() : ""}
       <div class="foot"><div class="row">
         ${ks.tunnel_up

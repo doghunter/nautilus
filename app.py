@@ -1782,7 +1782,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.31.0"
+VERSION = "1.31.1"
 
 
 @app.route("/api/data")
@@ -2895,11 +2895,11 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <span><input id="GATT_POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
   </div>
   <div class="row">
-    <label>GPS buffer log read<small>how often the KNOT log is downloaded (read right after a coverage gap)</small></label>
+    <label>KNOT log download<small>every N s a full KNOT log snapshot is saved server-side (right after a coverage gap too)</small></label>
     <span><input id="GPSBUF_POLL_SECONDS" type="number" min="60" max="86400"><span class="unit">s</span></span>
   </div>
   <div class="row">
-    <label>Log archive retention<small>delete downloaded KNOT logs older than this (0 = keep forever)</small></label>
+    <label>Log archive retention<small>delete saved KNOT logs older than this (0 = keep forever)</small></label>
     <span><input id="GPSBUF_RETENTION_DAYS" type="number" min="0" max="3650"><span class="unit">days</span></span>
   </div>
 </div>
@@ -3335,8 +3335,9 @@ KNOT_LOGS_HTML = """<!DOCTYPE html>
     </select>
   </div>
 </div>
-<p class="hint">Each archive is a full snapshot of the KNOT system log at download time
-(throttled, see Settings → GPS buffer log read). Rows appear newest-first here.
+<p class="hint">Each archive is a full snapshot of the KNOT system log, saved server-side
+every "KNOT log download" seconds (Settings) and right after a coverage gap.
+Rows appear newest-first here.
 All times are local ({{TZ}}).</p>
 <div class="card">
   <table id="tbl">

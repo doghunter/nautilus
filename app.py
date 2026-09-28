@@ -73,6 +73,10 @@ NIGHT_END = int(os.environ.get("NIGHT_END", "7"))
 POLL_SECONDS_NIGHT = int(os.environ.get("POLL_SECONDS_NIGHT", "0"))
 GPS_POLL_SECONDS = 120   # the GPS monitor call is blocking (~15-20s): dedicated cadence
 GPSBUF_POLL_SECONDS = int(os.environ.get("GPSBUF_POLL_SECONDS", "900"))
+# Archives older than this many days are deleted on each log download
+# (0 = keep forever). Applies to data/knot-log-archive/*.json only; the
+# GBUF archive (data/gpsbuf-archive.log) is tiny and always kept.
+GPSBUF_RETENTION_DAYS = int(os.environ.get("GPSBUF_RETENTION_DAYS", "30"))
 
 # Adaptive reporting interval: when the boat is stationary (speed < threshold)
 # the expensive KNOT GPS call is skipped until GPS_STATIONARY_INTERVAL
@@ -442,6 +446,34 @@ def _parse_gpsbuf_time(t):
         return None
 
 
+def _gpsbuf_cleanup_archives():
+    """Delete raw log archives older than GPSBUF_RETENTION_DAYS days."""
+    days = _cfg("GPSBUF_RETENTION_DAYS", GPSBUF_RETENTION_DAYS)
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        days = GPSBUF_RETENTION_DAYS
+    if days <= 0:
+        return
+    rawdir = os.path.join(os.path.dirname(GPSBUF_ARCHIVE), "knot-log-archive")
+    if not os.path.isdir(rawdir):
+        return
+    cutoff = time.time() - days * 86400
+    removed = 0
+    for fn in os.listdir(rawdir):
+        p = os.path.join(rawdir, fn)
+        try:
+            if fn.endswith(".json") and os.path.isfile(p) \
+                    and os.path.getmtime(p) < cutoff:
+                os.unlink(p)
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        log.info("KNOT log archive: %d file(s) older than %d day(s) removed",
+                 removed, days)
+
+
 def replay_gps_buffer(force=False):
     """Reads GBUF lines from the KNOT log and replays the new ones.
 
@@ -464,6 +496,7 @@ def replay_gps_buffer(force=False):
         r.raise_for_status()
         rows = r.json()
         _gpsbuf_last_fetch = now
+        _gpsbuf_cleanup_archives()
     except Exception as exc:
         log.warning("GPS buffer read failed: %s", exc)
         return
@@ -1127,6 +1160,7 @@ def _cfg_snapshot():
         "GPS_POLL_SECONDS": max(60, _cfg("GPS_POLL_SECONDS", GPS_POLL_SECONDS)),
         "GATT_POLL_SECONDS": max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS)),
         "GPSBUF_POLL_SECONDS": max(60, _cfg("GPSBUF_POLL_SECONDS", GPSBUF_POLL_SECONDS)),
+        "GPSBUF_RETENTION_DAYS": max(0, _cfg("GPSBUF_RETENTION_DAYS", GPSBUF_RETENTION_DAYS)),
         "STATIONARY_SPEED_KN": _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN),
         "GPS_STATIONARY_INTERVAL": max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL)),
         "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
@@ -1748,7 +1782,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.30.4"
+VERSION = "1.31.0"
 
 
 @app.route("/api/data")
@@ -1992,6 +2026,7 @@ def api_settings_post():
         "GPS_POLL_SECONDS": (60, 3600),
         "GATT_POLL_SECONDS": (60, 3600),
         "GPSBUF_POLL_SECONDS": (60, 86400),
+        "GPSBUF_RETENTION_DAYS": (0, 3650),
         "STATIONARY_SPEED_KN": (0.0, 20.0),
         "GPS_STATIONARY_INTERVAL": (30, 7200),
         "SOLAR_HISTORY_DAYS": (1, 30),
@@ -2863,6 +2898,10 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <label>GPS buffer log read<small>how often the KNOT log is downloaded (read right after a coverage gap)</small></label>
     <span><input id="GPSBUF_POLL_SECONDS" type="number" min="60" max="86400"><span class="unit">s</span></span>
   </div>
+  <div class="row">
+    <label>Log archive retention<small>delete downloaded KNOT logs older than this (0 = keep forever)</small></label>
+    <span><input id="GPSBUF_RETENTION_DAYS" type="number" min="0" max="3650"><span class="unit">days</span></span>
+  </div>
 </div>
 
 <div class="card">
@@ -2938,6 +2977,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END",
   "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "GPSBUF_POLL_SECONDS",
+  "GPSBUF_RETENTION_DAYS",
   "STATIONARY_SPEED_KN",
   "GPS_STATIONARY_INTERVAL", "SOLAR_HISTORY_DAYS"];
 async function load() {

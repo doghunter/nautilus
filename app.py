@@ -77,6 +77,46 @@ GPSBUF_POLL_SECONDS = int(os.environ.get("GPSBUF_POLL_SECONDS", "900"))
 # (0 = keep forever). Applies to data/knot-log-archive/*.json only; the
 # GBUF archive (data/gpsbuf-archive.log) is tiny and always kept.
 GPSBUF_RETENTION_DAYS = int(os.environ.get("GPSBUF_RETENTION_DAYS", "30"))
+# How often the KNOT-side gps-buffer script writes a GBUF log line (its
+# scheduler interval). Applied to the KNOT via REST when changed here.
+GBUF_WRITE_SECONDS = int(os.environ.get("GBUF_WRITE_SECONDS", "300"))
+
+
+def _seconds_to_interval(sec):
+    """RouterOS interval string from seconds."""
+    if sec % 3600 == 0:
+        return f"{sec // 3600}h"
+    if sec % 60 == 0:
+        return f"{sec // 60}m"
+    return f"{sec}s"
+
+
+def apply_gbuf_interval(sec):
+    """Push the GBUF write interval to the KNOT gps-buffer scheduler (REST).
+
+    Best effort: failures are logged, never raised - the scheduler entry
+    must be owned by the REST user (recreated that way on 2026-09-28).
+    Called from the settings POST handler with a thread.
+    """
+    global _gbuf_apply_error
+    try:
+        r = requests.post(
+            f"http://{KNOT_HOST}/rest/system/scheduler/set",
+            json={"numbers": "gps-buffer", "interval": _seconds_to_interval(int(sec))},
+            auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS), timeout=20)
+        if r.status_code == 200:
+            log.info("GBUF write interval set on KNOT: %s s", int(sec))
+            _gbuf_apply_error = None
+        else:
+            msg = f"KNOT scheduler set failed: HTTP {r.status_code} {r.text[:120]}"
+            log.warning(msg)
+            _gbuf_apply_error = msg
+    except Exception as exc:
+        _gbuf_apply_error = f"KNOT unreachable: {exc}"
+        log.warning("GBUF interval apply failed: %s", exc)
+
+
+_gbuf_apply_error = None
 
 # Adaptive reporting interval: when the boat is stationary (speed < threshold)
 # the expensive KNOT GPS call is skipped until GPS_STATIONARY_INTERVAL
@@ -1161,6 +1201,7 @@ def _cfg_snapshot():
         "GATT_POLL_SECONDS": max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS)),
         "GPSBUF_POLL_SECONDS": max(60, _cfg("GPSBUF_POLL_SECONDS", GPSBUF_POLL_SECONDS)),
         "GPSBUF_RETENTION_DAYS": max(0, _cfg("GPSBUF_RETENTION_DAYS", GPSBUF_RETENTION_DAYS)),
+        "GBUF_WRITE_SECONDS": max(60, _cfg("GBUF_WRITE_SECONDS", GBUF_WRITE_SECONDS)),
         "STATIONARY_SPEED_KN": _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN),
         "GPS_STATIONARY_INTERVAL": max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL)),
         "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
@@ -1782,7 +1823,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.31.1"
+VERSION = "1.32.0"
 
 
 @app.route("/api/data")
@@ -2027,6 +2068,7 @@ def api_settings_post():
         "GATT_POLL_SECONDS": (60, 3600),
         "GPSBUF_POLL_SECONDS": (60, 86400),
         "GPSBUF_RETENTION_DAYS": (0, 3650),
+        "GBUF_WRITE_SECONDS": (60, 3600),
         "STATIONARY_SPEED_KN": (0.0, 20.0),
         "GPS_STATIONARY_INTERVAL": (30, 7200),
         "SOLAR_HISTORY_DAYS": (1, 30),
@@ -2112,6 +2154,11 @@ def api_settings_post():
             _runtime_cfg[k] = str(num)
     log.info("Runtime settings aggiornate: %s", _runtime_cfg)
     _runtime_cfg_save()
+    # Push the KNOT-side GBUF write interval when it changed
+    if "GBUF_WRITE_SECONDS" in body and body["GBUF_WRITE_SECONDS"] is not None:
+        threading.Thread(target=apply_gbuf_interval,
+                        args=(int(_cfg("GBUF_WRITE_SECONDS", GBUF_WRITE_SECONDS)),),
+                        daemon=True).start()
     return jsonify(_cfg_snapshot())
 
 
@@ -2902,6 +2949,10 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <label>Log archive retention<small>delete saved KNOT logs older than this (0 = keep forever)</small></label>
     <span><input id="GPSBUF_RETENTION_DAYS" type="number" min="0" max="3650"><span class="unit">days</span></span>
   </div>
+  <div class="row">
+    <label>GBUF write interval<small>how often the KNOT records its GPS position in the log (applied on the KNOT right away)</small></label>
+    <span><input id="GBUF_WRITE_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
+  </div>
 </div>
 
 <div class="card">
@@ -2977,7 +3028,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END",
   "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "GPSBUF_POLL_SECONDS",
-  "GPSBUF_RETENTION_DAYS",
+  "GPSBUF_RETENTION_DAYS", "GBUF_WRITE_SECONDS",
   "STATIONARY_SPEED_KN",
   "GPS_STATIONARY_INTERVAL", "SOLAR_HISTORY_DAYS"];
 async function load() {

@@ -1731,7 +1731,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.29.0"
+VERSION = "1.29.1"
 
 
 @app.route("/api/data")
@@ -2414,7 +2414,7 @@ async function refresh() {
         <div class="metric"><div class="k">Projected month-end</div><div class="v">${du.projected_mb} MB</div></div>
         <div class="metric"><div class="k">Days sampled</div><div class="v">${du.days_with_data}</div></div>
       </div>
-      <div class="foot"><div class="row">WireGuard tunnel counters (SIM traffic) · sampled every __DU_POLL_MIN__ min</div></div>`;
+      <div class="foot"><div class="row">WireGuard tunnel counters (SIM traffic) · sampled every __DU_POLL_MIN__ min · counters and stats reset at the start of each month</div></div>`;
   }
 
   // ---- Knot status ----

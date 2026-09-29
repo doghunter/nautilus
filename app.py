@@ -477,6 +477,8 @@ _gpsbuf_last_ts = None    # newest gpsbuf line already replayed (log .id time)
 _gpsbuf_last_fetch = None # last successful /rest/log download (unix time)
 _knot_tunnel_was_up = None  # previous poll's tunnel state (gap detection)
 _knot_serial = None  # KNOT board serial (static, read once)
+_lte_if_id = ""        # cached lte1 interface .id (changes on KNOT reboot)
+_knot_iccid = None     # SIM ICCID (static per SIM, read once)
 
 
 def _parse_gpsbuf_time(t):
@@ -1278,6 +1280,8 @@ def _ble_notes():
 # Retention of values carried only by some frame types (the KNOT exposes the
 # last adv received: the BM6 alternates iBeacon and encrypted frames)
 _bm6_keep = {}
+_bm6_dev_name = None   # cached BM6 peripheral name (avoids the 10.8 KB dump)
+_bm6_dev_id = ""       # cached BM6 peripheral .id (changes on KNOT reboot)
 
 
 def _bm6_retain(parsed):
@@ -1416,15 +1420,33 @@ def fetch_bm6_gatt():
         conns = _gatt_get("")
         _mac_l = BM6_MAC.lower()
 # resolves the peripheral NAME: on RouterOS
-# connections the name field may be the device name, not the MAC
-        r0 = requests.get(KNOT_URL, auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS), timeout=15)
-        r0.raise_for_status()
-        dev = next((d for d in r0.json()
-                    if d.get("address", "").upper() == BM6_MAC and d.get("persist") == "true"), None)
-        if not dev:
-            log.warning("GATT: BM6 non presente nella tabella KNOT")
-            return
-        dev_name = (dev.get("name") or "").lower()
+# connections the name field may be the device name, not the MAC.
+# The full peripheral dump (10.8 KB, every BLE device in range!) is only
+# needed for this: cache the name and re-read only when the connection
+# lookup fails with the cached name (device renamed / table changed).
+        global _bm6_dev_name, _bm6_dev_id
+        dev_name = _bm6_dev_name
+        conn = None
+        if dev_name:
+            conn = next((c for c in conns
+                        if _mac_l in (c.get("name") or "").lower()
+                        or _mac_l in (c.get("pdev") or "").lower()
+                        or (dev_name and dev_name in (c.get("name") or "").lower())), None)
+        if not dev_name or not conn:
+            r0 = requests.get(KNOT_URL, auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS), timeout=15)
+            r0.raise_for_status()
+            dev = next((d for d in r0.json()
+                        if d.get("address", "").upper() == BM6_MAC and d.get("persist") == "true"), None)
+            if not dev:
+                log.warning("GATT: BM6 non presente nella tabella KNOT")
+                return
+            dev_name = (dev.get("name") or "").lower()
+            _bm6_dev_name = dev_name
+            _bm6_dev_id = dev.get(".id") or ""
+            conn = next((c for c in conns
+                        if _mac_l in (c.get("name") or "").lower()
+                        or _mac_l in (c.get("pdev") or "").lower()
+                        or (dev_name and dev_name in (c.get("name") or "").lower())), None)
         conn = next((c for c in conns
                      if _mac_l in (c.get("name") or "").lower()
                      or _mac_l in (c.get("pdev") or "").lower()
@@ -1434,10 +1456,11 @@ def fetch_bm6_gatt():
             try:
                 _gatt_post("/connect", {"pdev": BM6_MAC})
             except Exception:
-                try:
-                    _gatt_post("/connect", {"pdev": dev[".id"]})
-                except Exception:
-                    pass   # already connected with another identifier: retry the match
+                if _bm6_dev_id:
+                    try:
+                        _gatt_post("/connect", {"pdev": _bm6_dev_id})
+                    except Exception:
+                        pass   # already connected with another identifier: retry the match
             time.sleep(2)
             conns = _gatt_get("")
             conn = next((c for c in conns
@@ -1571,21 +1594,26 @@ def gatt_loop():
 def fetch_lte():
     """Reads the KNOT LTE signal quality (fast, non-blocking request).
 
-    First fetches the LTE interface .id (it can change after a reboot),
-    then queries the monitor for RSRP/RSRQ/SINR/RSSI values.
+    Uses the cached LTE interface .id (re-read only after a failure, e.g.
+    after a KNOT reboot) and queries the monitor for RSRP/RSRQ/SINR/RSSI.
     """
+    global _lte_if_id
     try:
-        r = requests.get(
-            f"http://{KNOT_HOST}/rest/interface/lte",
-            auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
-            timeout=10,
-        )
-        r.raise_for_status()
-        rows = r.json()
-        if not rows:
-            _state["lte"] = None
-            return
-        lte_id = rows[0][".id"]
+        global _lte_if_id
+        lte_id = _lte_if_id
+        if not lte_id:
+            r = requests.get(
+                f"http://{KNOT_HOST}/rest/interface/lte",
+                auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                timeout=10,
+            )
+            r.raise_for_status()
+            rows = r.json()
+            if not rows:
+                _state["lte"] = None
+                return
+            lte_id = rows[0][".id"]
+            _lte_if_id = lte_id
         r = requests.post(
             KNOT_LTE_URL,
             auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
@@ -1631,6 +1659,8 @@ def fetch_lte():
     except Exception as exc:
         log.warning("Lettura LTE fallita: %s", exc)
         _state["lte"] = None
+        # the cached .id may be stale (KNOT reboot): force a re-read next time
+        _lte_if_id = ""
 
 
 def fetch_knot_status():
@@ -1679,20 +1709,24 @@ def fetch_knot_status():
                 _knot_serial = r3.json().get("serial-number", "") or ""
             except Exception:
                 _knot_serial = ""
-        # SIM info: ICCID + operator via LTE monitor (once)
-        iccid = operator = band = None
-        try:
-            r4 = requests.post(
-                f"http://{KNOT_HOST}/rest/interface/lte/monitor",
-                json={"numbers": "lte1", "once": ""},
-                auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
-                timeout=15)
-            m = (r4.json() or [{}])[0]
-            iccid = m.get("iccid") or None
-            operator = m.get("current-operator") or None
-            band = m.get("primary-band") or None
-        except Exception:
-            pass
+        # SIM info: ICCID is static per SIM - read once per process.
+        # Operator/band change but are already fetched by fetch_lte.
+        global _knot_iccid
+        if _knot_iccid is None:
+            try:
+                r4 = requests.post(
+                    f"http://{KNOT_HOST}/rest/interface/lte/monitor",
+                    json={"numbers": "lte1", "once": ""},
+                    auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                    timeout=15)
+                m = (r4.json() or [{}])[0]
+                _knot_iccid = m.get("iccid") or ""
+            except Exception:
+                _knot_iccid = ""
+        iccid = _knot_iccid or None
+        lte_state = _state.get("lte") or {}
+        operator = lte_state.get("operator") or None
+        band = lte_state.get("band") or None
         uptime = res.get("uptime", "")
         try:
             cpu_load = int(res.get("cpu-load", 0))
@@ -1989,7 +2023,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.34.2"
+VERSION = "1.35.0"
 
 
 @app.route("/api/data")

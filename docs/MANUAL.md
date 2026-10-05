@@ -168,6 +168,13 @@ When the KNOT itself is unreachable the card says so explicitly. This pairs
 with the KNOT-side watchdog script (ping CHR → LTE reset → reboot): the card
 tells you from shore whether the watchdog should be reacting.
 
+Since v1.36.3 the card also shows the **GPS revive** row: the time of the
+last `gps-revive` re-initialization (the KNOT-side scheduler that re-inits
+the GPS port after 15 minutes with 0 satellites — see the GPS recovery
+section), or "never (satellites OK)". The information is extracted from
+the same throttled `/rest/log` download already used for the last-reboot
+row, so it costs no additional SIM traffic.
+
 ### GPS buffer and no-coverage recovery (v1.22.x)
 
 A small script on the KNOT (`gps-buffer`, scheduler every 5 min) writes one

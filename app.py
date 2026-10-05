@@ -1740,6 +1740,8 @@ def fetch_last_reboot():
 
     The /rest/log read is done only every 15 min (shared with the log
     download throttle) to keep the SIM traffic low; failures return None.
+    The same download also feeds _fetch_last_gps_revive(), so the extra
+    information costs no additional SIM traffic.
     """
     global _last_reboot_ts
     if _last_reboot_ts and time.time() - _last_reboot_ts < 900:
@@ -1749,8 +1751,9 @@ def fetch_last_reboot():
                          auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
                          timeout=25)
         r.raise_for_status()
+        rows = r.json()
         best = None
-        for e in r.json():
+        for e in rows:
             msg = e.get("message", "")
             if "rebooted by" in msg:
                 best = (e.get("time", ""), msg, "watchdog" in msg.lower())
@@ -1758,6 +1761,7 @@ def fetch_last_reboot():
         _state["last_reboot"] = (
             {"time": best[0], "cause": best[1], "watchdog": best[2]}
             if best else None)
+        _fetch_last_gps_revive(rows)
     except Exception as exc:
         log.warning("Lettura ultimo reboot fallita: %s", exc)
     _last_reboot_ts = time.time()
@@ -1765,6 +1769,29 @@ def fetch_last_reboot():
 
 
 _last_reboot_ts = 0.0
+
+
+def _fetch_last_gps_revive(rows):
+    """Extracts the newest gps-revive action line from the KNOT log rows.
+
+    The KNOT-side gps-revive scheduler logs
+    'gps-revive: 0 satellites for N min - re-initializing GPS port' (warning)
+    every time it re-inits the GPS. Called from fetch_last_reboot() on the
+    same throttled /rest/log download, so it adds no SIM traffic. Stored in
+    _state as knot_status.last_gps_revive.
+    """
+    try:
+        for e in rows:
+            msg = e.get("message", "")
+            if msg.startswith("gps-revive:"):
+                _state["last_gps_revive"] = {
+                    "time": e.get("time", ""),
+                    "message": msg,
+                }
+                return
+        _state["last_gps_revive"] = None
+    except Exception as exc:
+        log.warning("Lettura gps-revive fallita: %s", exc)
 
 
 def fetch_knot_status():
@@ -1861,6 +1888,7 @@ def fetch_knot_status():
             "serial": _knot_serial,
             "iccid": iccid,
             "last_reboot": last_reboot,
+            "last_gps_revive": _state.get("last_gps_revive"),
             "operator": operator,
             "band": band,
             "free_memory": free_mem,
@@ -2129,7 +2157,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.2"
+VERSION = "1.36.3"
 
 
 @app.route("/api/data")
@@ -3003,6 +3031,11 @@ async function refresh() {
                 ? "<span style='color:#fbbf24'>watchdog</span> (" + esc(ks.last_reboot.cause.replace("router rebooted by ", "")) + ")"
                 : esc(ks.last_reboot.cause))
             : "—"}</div>
+        <div class="row">GPS revive: ${
+          ks.last_gps_revive
+            ? "<span style='color:#fbbf24'>last re-init</span> at " +
+              esc(ks.last_gps_revive.time)
+            : "never (satellites OK)"}</div>
         <div class="row">ICCID: ${esc(ks.iccid || "—")}${ks.operator ? " · " + esc(ks.operator) : ""}${ks.band ? " · " + esc(ks.band.split(" ")[0]) : ""}</div>
         <div class="row">
         ${ks.tunnel_up

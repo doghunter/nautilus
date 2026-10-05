@@ -622,6 +622,33 @@ def replay_gps_buffer(force=False):
 # local SQLite, exposes it via API and builds a forecast from the average
 # of previous days curves.
 # --------------------------------------------------------------------------
+def _last_fix_save(gps):
+    """Persist the last valid GPS fix so the dashboard can show it
+    (labelled as stale) while the KNOT is unreachable or has no fix."""
+    try:
+        con = _solar_db()
+        con.execute("CREATE TABLE IF NOT EXISTS last_fix ("
+                    "id INTEGER PRIMARY KEY CHECK (id = 1), "
+                    "json TEXT NOT NULL)")
+        con.execute("INSERT INTO last_fix (id, json) VALUES (1, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET json = excluded.json",
+                    (json.dumps(gps),))
+        con.commit()
+        con.close()
+    except Exception as exc:
+        log.warning("last_fix non salvato: %s", exc)
+
+
+def _last_fix_load():
+    try:
+        con = _solar_db()
+        row = con.execute("SELECT json FROM last_fix WHERE id = 1").fetchone()
+        con.close()
+        return json.loads(row[0]) if row else None
+    except Exception:
+        return None
+
+
 def _solar_db():
     import sqlite3
     d = os.path.dirname(SOLAR_DB)
@@ -1402,6 +1429,7 @@ def fetch_gps():
             _state["gps"]["report_mode"] = (
                 "stationary" if _state["gps"]["speed_kn"] < STATIONARY_SPEED_KN
                 else "moving")
+            _last_fix_save(dict(_state["gps"]))
             if save_position(_state["gps"]):
                 log.info("Posizione salvata nello storico: %.6f, %.6f",
                          _state["gps"]["latitude"], _state["gps"]["longitude"])
@@ -2067,7 +2095,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.0"
+VERSION = "1.36.1"
 
 
 @app.route("/api/data")
@@ -2077,6 +2105,17 @@ def api_data():
     _state["version"] = VERSION
     _state["data_usage"] = data_usage_summary()
     _state["eco_mode"] = _eco_mode()
+    if not (_state.get("gps") or {}).get("valid"):
+        lf = _last_fix_load()
+        if lf:
+            try:
+                age_s = (datetime.now().astimezone()
+                         - datetime.fromisoformat(lf.get("fix_time_iso"))).total_seconds()
+            except (ValueError, TypeError):
+                age_s = None
+            lf["stale"] = True
+            lf["age_s"] = int(age_s) if age_s is not None and age_s >= 0 else None
+            _state["gps"] = lf
     _state["outages"] = outage_summary()
     return jsonify(_state)
 
@@ -2727,6 +2766,53 @@ async function refresh() {
   if (!g) {
     gpsEl.innerHTML = "<h2>📍 Position <span class='chip idle'>waiting</span></h2>" +
       "<div class='note'>KNOT GPS not yet read…</div>";
+  } else if (g.stale) {
+    if (window._staleKey === g.fix_time_iso) {   // already rendered: update age only
+      const ago2 = g.age_s == null ? "" :
+        (g.age_s < 3600 ? Math.round(g.age_s/60) + " min" :
+         g.age_s < 86400 ? Math.round(g.age_s/3600) + " h" :
+         Math.round(g.age_s/86400) + " days") + " ago";
+      const ageEl = document.querySelector("#gps .metric .v[style]");
+      const ag = gpsEl.querySelector(".metric:nth-child(2) .v");
+      if (ag) ag.textContent = ago2;
+      return;
+    }
+    window._staleKey = g.fix_time_iso;
+    const ago = g.age_s == null ? "" :
+      (g.age_s < 3600 ? Math.round(g.age_s/60) + " min" :
+       g.age_s < 86400 ? Math.round(g.age_s/3600) + " h" :
+       Math.round(g.age_s/86400) + " days") + " ago";
+    gpsEl.innerHTML = `
+      <h2>📍 {{BOAT}} <span class="chip warn">stale fix</span></h2>
+      <div class="main-val">${g.latitude.toFixed(6)}, ${g.longitude.toFixed(6)}</div>
+      <div class="metrics">
+        <div class="metric"><div class="k">Last fix (local)</div><div class="v" style="font-size:1rem">${esc(g.fix_time || "—")}</div></div>
+        <div class="metric"><div class="k">Age</div><div class="v">${esc(ago)}</div></div>
+        <div class="metric"><div class="k">Speed at fix</div><div class="v">${g.speed_kn.toFixed(1)} <small>kn</small></div></div>
+      </div>
+      <div class="map-toggle">
+        <button id="btn-nautical" class="active" onclick="window._showMap('nautical')">Nautical chart</button>
+        <button id="btn-gmaps" onclick="window._showMap('gmaps')">Google Maps</button>
+      </div>
+      <div class="map-wrap"><div id="map"></div></div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap">
+        <a class="gmaps-link" href="https://maps.google.com/?q=${g.latitude},${g.longitude}" target="_blank" rel="noopener">Open in Google Maps ↗</a>
+      </div>
+      <div class="foot"><div class="row">Last valid fix: ${esc(g.fix_time)} ${esc(d.tz_label || "")} — waiting for a new GPS read…</div></div>`;
+    window._nautilusInit = false;   // live map rebuilds when a fresh fix arrives
+    try {
+      window._nautilusMap = L.map("map", { zoomControl: true });
+      var osmAttr = "&co" + "py; OpenStreetMap";
+      L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19, attribution: osmAttr }).addTo(window._nautilusMap);
+      L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", {
+        maxZoom: 18, attribution: "OpenSeaMap" }).addTo(window._nautilusMap);
+      L.marker([g.latitude, g.longitude], {
+        icon: L.divIcon({ className: "boat-icon", html: "⛵", iconSize: [26, 26], iconAnchor: [13, 13] })
+      }).addTo(window._nautilusMap);
+      window._nautilusMap.setView([g.latitude, g.longitude], 15);
+      window._nautilusFollow = true;
+    } catch (e) { /* map libs not loaded yet */ }
   } else {
     const lat = g.latitude, lon = g.longitude;
     const gmaps = "https://maps.google.com/?q=" + lat + "," + lon;

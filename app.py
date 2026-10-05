@@ -1735,6 +1735,38 @@ def fetch_lte():
         _lte_if_id = ""
 
 
+def fetch_last_reboot():
+    """Last reboot entry from the KNOT log: (time, cause, by_watchdog).
+
+    The /rest/log read is done only every 15 min (shared with the log
+    download throttle) to keep the SIM traffic low; failures return None.
+    """
+    global _last_reboot_ts
+    if _last_reboot_ts and time.time() - _last_reboot_ts < 900:
+        return _state.get("last_reboot")
+    try:
+        r = requests.get(f"http://{KNOT_HOST}/rest/log",
+                         auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                         timeout=25)
+        r.raise_for_status()
+        best = None
+        for e in r.json():
+            msg = e.get("message", "")
+            if "rebooted by" in msg:
+                best = (e.get("time", ""), msg, "watchdog" in msg.lower())
+                break   # log is newest-first: first hit is the last reboot
+        _state["last_reboot"] = (
+            {"time": best[0], "cause": best[1], "watchdog": best[2]}
+            if best else None)
+    except Exception as exc:
+        log.warning("Lettura ultimo reboot fallita: %s", exc)
+    _last_reboot_ts = time.time()
+    return _state.get("last_reboot")
+
+
+_last_reboot_ts = 0.0
+
+
 def fetch_knot_status():
     """WireGuard tunnel and KNOT status (for the "Knot status" card).
 
@@ -1796,6 +1828,7 @@ def fetch_knot_status():
             except Exception:
                 _knot_iccid = ""
         iccid = _knot_iccid or None
+        last_reboot = fetch_last_reboot()
         lte_state = _state.get("lte") or {}
         operator = lte_state.get("operator") or None
         band = lte_state.get("band") or None
@@ -1827,6 +1860,7 @@ def fetch_knot_status():
             "cpu_load": cpu_load,
             "serial": _knot_serial,
             "iccid": iccid,
+            "last_reboot": last_reboot,
             "operator": operator,
             "band": band,
             "free_memory": free_mem,
@@ -2095,7 +2129,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.1"
+VERSION = "1.36.2"
 
 
 @app.route("/api/data")
@@ -2962,6 +2996,13 @@ async function refresh() {
       </div>`; })() : ""}
       <div class="foot">
         <div class="row">Serial No.: ${esc(ks.serial || "—")}</div>
+        <div class="row">Last reboot: ${
+          ks.last_reboot
+            ? esc(ks.last_reboot.time) + " · " +
+              (ks.last_reboot.watchdog
+                ? "<span style='color:#fbbf24'>watchdog</span> (" + esc(ks.last_reboot.cause.replace("router rebooted by ", "")) + ")"
+                : esc(ks.last_reboot.cause))
+            : "—"}</div>
         <div class="row">ICCID: ${esc(ks.iccid || "—")}${ks.operator ? " · " + esc(ks.operator) : ""}${ks.band ? " · " + esc(ks.band.split(" ")[0]) : ""}</div>
         <div class="row">
         ${ks.tunnel_up

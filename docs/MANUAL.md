@@ -380,6 +380,19 @@ curl -s http://localhost:8080/api/data | python3 -m json.tool
 
 ## 7. Troubleshooting
 
+### LTE modem firmware (Quectel EC25)
+
+The modem firmware is checked and upgraded directly from RouterOS (no
+external QFlash/USB needed):
+
+    /interface lte firmware-upgrade lte1              # check installed/latest
+    /interface lte firmware-upgrade lte1 upgrade=yes  # install latest (FOTA)
+
+Cat-4 modems have full update support; an internet connection is required
+(the LTE link itself is fine). knotCalm verified up to date on 2026-10-05
+(EC25EUGAR08A04M4G_A0.301) — the GNSS-not-reviving behavior is not a
+firmware issue.
+
 ### GPS stays at 0 satellites after a KNOT reboot or LTE reset
 
 The Quectel EC25 modem's GNSS session does not come back on its own after

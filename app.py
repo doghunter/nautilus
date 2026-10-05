@@ -77,7 +77,7 @@ POLL_SECONDS_NIGHT = int(os.environ.get("POLL_SECONDS_NIGHT", "0"))
 GATT_POLL_SECONDS_NIGHT = int(os.environ.get("GATT_POLL_SECONDS_NIGHT", "0"))
 STATIONARY_ECO_MINUTES = int(os.environ.get("STATIONARY_ECO_MINUTES", "10"))
 GPS_POLL_SECONDS = 120   # the GPS monitor call is blocking (~15-20s): dedicated cadence
-GPSBUF_POLL_SECONDS = int(os.environ.get("GPSBUF_POLL_SECONDS", "900"))
+GPSBUF_POLL_SECONDS = int(os.environ.get("GPSBUF_POLL_SECONDS", "3600"))
 # Archives older than this many days are deleted on each log download
 # (0 = keep forever). Applies to data/knot-log-archive/*.json only; the
 # GBUF archive (data/gpsbuf-archive.log) is tiny and always kept.
@@ -530,6 +530,9 @@ def replay_gps_buffer(force=False):
     away after a coverage gap (tunnel was down), or when forced. Every read
     is archived on the server (raw JSON + GBUF lines in data/) before the
     KNOT's ring buffer scrolls on.
+    This is the ONLY /rest/log download in the app: the same rows also feed
+    the LTE reset tracker and the last_reboot / last_gps_revive state used
+    by the Knot status card, so the card costs no extra SIM traffic.
     """
     global _gpsbuf_last_ts, _gpsbuf_last_fetch
     now = time.time()
@@ -546,6 +549,8 @@ def replay_gps_buffer(force=False):
         _gpsbuf_last_fetch = now
         _gpsbuf_cleanup_archives()
         track_lte_resets(rows)
+        _parse_reboot_rows(rows)
+        _fetch_last_gps_revive(rows)
     except Exception as exc:
         log.warning("GPS buffer read failed: %s", exc)
         return
@@ -1735,40 +1740,24 @@ def fetch_lte():
         _lte_if_id = ""
 
 
-def fetch_last_reboot():
-    """Last reboot entry from the KNOT log: (time, cause, by_watchdog).
+def _parse_reboot_rows(rows):
+    """Last reboot entry from the KNOT log rows: (time, cause, by_watchdog).
 
-    The /rest/log read is done only every 15 min (shared with the log
-    download throttle) to keep the SIM traffic low; failures return None.
-    The same download also feeds _fetch_last_gps_revive(), so the extra
-    information costs no additional SIM traffic.
+    Pure parser: the rows come from replay_gps_buffer()'s throttled
+    /rest/log download, so the status card adds no SIM traffic.
     """
-    global _last_reboot_ts
-    if _last_reboot_ts and time.time() - _last_reboot_ts < 900:
-        return _state.get("last_reboot")
-    try:
-        r = requests.get(f"http://{KNOT_HOST}/rest/log",
-                         auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
-                         timeout=25)
-        r.raise_for_status()
-        rows = r.json()
-        best = None
-        for e in rows:
-            msg = e.get("message", "")
-            if "rebooted by" in msg:
-                best = (e.get("time", ""), msg, "watchdog" in msg.lower())
-                break   # log is newest-first: first hit is the last reboot
-        _state["last_reboot"] = (
-            {"time": best[0], "cause": best[1], "watchdog": best[2]}
-            if best else None)
-        _fetch_last_gps_revive(rows)
-    except Exception as exc:
-        log.warning("Lettura ultimo reboot fallita: %s", exc)
-    _last_reboot_ts = time.time()
-    return _state.get("last_reboot")
-
-
-_last_reboot_ts = 0.0
+    # /rest/log returns the rows oldest-first: keep the LAST reboot
+    # (greatest time, 'YYYY-MM-DD HH:MM:SS' sorts lexicographically)
+    best = None
+    for e in rows:
+        msg = e.get("message", "")
+        if "rebooted by" in msg:
+            t = e.get("time", "")
+            if best is None or t > best[0]:
+                best = (t, msg, "watchdog" in msg.lower())
+    _state["last_reboot"] = (
+        {"time": best[0], "cause": best[1], "watchdog": best[2]}
+        if best else None)
 
 
 def _fetch_last_gps_revive(rows):
@@ -1776,20 +1765,21 @@ def _fetch_last_gps_revive(rows):
 
     The KNOT-side gps-revive scheduler logs
     'gps-revive: 0 satellites for N min - re-initializing GPS port' (warning)
-    every time it re-inits the GPS. Called from fetch_last_reboot() on the
+    every time it re-inits the GPS. Called from replay_gps_buffer() on the
     same throttled /rest/log download, so it adds no SIM traffic. Stored in
-    _state as knot_status.last_gps_revive.
+    _state as last_gps_revive.
     """
     try:
+        # /rest/log returns the rows oldest-first: keep the LAST
+        # gps-revive action (greatest time)
+        hit = None
         for e in rows:
             msg = e.get("message", "")
             if msg.startswith("gps-revive:"):
-                _state["last_gps_revive"] = {
-                    "time": e.get("time", ""),
-                    "message": msg,
-                }
-                return
-        _state["last_gps_revive"] = None
+                t = e.get("time", "")
+                if hit is None or t > hit["time"]:
+                    hit = {"time": t, "message": msg}
+        _state["last_gps_revive"] = hit
     except Exception as exc:
         log.warning("Lettura gps-revive fallita: %s", exc)
 
@@ -1855,7 +1845,7 @@ def fetch_knot_status():
             except Exception:
                 _knot_iccid = ""
         iccid = _knot_iccid or None
-        last_reboot = fetch_last_reboot()
+        last_reboot = _state.get("last_reboot")
         lte_state = _state.get("lte") or {}
         operator = lte_state.get("operator") or None
         band = lte_state.get("band") or None
@@ -2157,7 +2147,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.3"
+VERSION = "1.36.4"
 
 
 @app.route("/api/data")
@@ -2344,6 +2334,27 @@ def api_knot_logs():
     except Exception as exc:
         log.warning("knot logs api: %s", exc)
         return jsonify({"error": "unavailable"}), 503
+
+
+@app.route("/api/knot/logs/fetch", methods=["POST"])
+@app.route("/nautilus/api/knot/logs/fetch", methods=["POST"])
+@app.route(URL_PREFIX_ALIAS + "/api/knot/logs/fetch", methods=["POST"])
+def api_knot_logs_fetch():
+    """Manual KNOT log download (knot-logs page "Download now" button).
+
+    Forces the shared throttled download immediately (archive + GBUF replay
+    + LTE resets + last_reboot / last_gps_revive refresh). Runs in a
+    background thread because the /rest/log read can take tens of seconds
+    on a slow LTE link; the response only reports that it was started.
+    """
+    def _do_fetch():
+        try:
+            replay_gps_buffer(force=True)
+        except Exception as exc:
+            log.warning("Manual KNOT log fetch failed: %s", exc)
+    import threading
+    threading.Thread(target=_do_fetch, daemon=True).start()
+    return jsonify({"status": "started"})
 
 
 @app.route("/api/settings")
@@ -3373,7 +3384,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <span><input id="GATT_POLL_SECONDS" type="number" min="60" max="3600"><span class="unit">s</span></span>
   </div>
   <div class="row">
-    <label>KNOT log download<small>every N s a full KNOT log snapshot is saved server-side (right after a coverage gap too)</small></label>
+    <label>KNOT log download<small>every N s the KNOT log is downloaded once and archived server-side (default 3600 = 1 h; also right after a coverage gap)</small></label>
     <span><input id="GPSBUF_POLL_SECONDS" type="number" min="60" max="86400"><span class="unit">s</span></span>
   </div>
   <div class="row">
@@ -3816,10 +3827,14 @@ KNOT_LOGS_HTML = """<!DOCTYPE html>
       <option value="err">errors only</option>
     </select>
   </div>
+  <div class="grp">
+    <label>Download from KNOT</label>
+    <button id="dl" onclick="dlNow()">&#8681; Download now</button>
+  </div>
 </div>
 <p class="hint">Each archive is a full snapshot of the KNOT system log, saved server-side
-every "KNOT log download" seconds (Settings) and right after a coverage gap.
-Rows appear newest-first here.
+every "KNOT log download" seconds (Settings), right after a coverage gap, or
+on demand with the "Download now" button. Rows appear newest-first here.
 All times are local ({{TZ}}).</p>
 <div class="card">
   <table id="tbl">
@@ -3868,6 +3883,38 @@ function render() {
   }).join("") || `<tr><td colspan="3" style="color:#64748b;padding:16px">No rows match.</td></tr>`;
   document.getElementById("count").textContent =
     `${rows.length} of ${ROWS.length} rows shown`;
+}
+
+async function dlNow() {
+  const btn = document.getElementById("dl");
+  const cnt = document.getElementById("count");
+  btn.disabled = true;
+  btn.textContent = "\u21bb Downloading\u2026";
+  cnt.textContent = "Downloading KNOT log\u2026";
+  try {
+    const r = await fetch("api/knot/logs/fetch", { method: "POST" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    // poll the archive list until a new snapshot appears (max ~60 s)
+    const before = new Set(Array.from(
+      document.getElementById("file").options).map(o => o.value));
+    for (let i = 0; i < 30; i++) {
+      await new Promise(res => setTimeout(res, 2000));
+      const d = await (await fetch("api/knot/logs")).json();
+      const files = d.files || [];
+      const newest = files[0] && files[0].file;
+      if (newest && !before.has(newest)) {
+        await loadFiles(newest);
+        cnt.textContent = "New snapshot downloaded: " + newest;
+        return;
+      }
+    }
+    cnt.textContent = "KNOT unreachable or no new snapshot yet \u2014 retry later.";
+  } catch (err) {
+    cnt.textContent = "Download failed: " + err;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = "&#8681; Download now";
+  }
 }
 
 document.getElementById("file").addEventListener("change", e => loadRows(e.target.value));

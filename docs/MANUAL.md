@@ -168,6 +168,21 @@ When the KNOT itself is unreachable the card says so explicitly. This pairs
 with the KNOT-side watchdog script (ping CHR → LTE reset → reboot): the card
 tells you from shore whether the watchdog should be reacting.
 
+### Single log download + manual fetch (v1.36.4)
+
+There is now exactly **one** `/rest/log` download in the app: the one
+`replay_gps_buffer()` already made on the `GPSBUF_POLL_SECONDS` cadence
+(Settings, default 3600 s = 1 h). The same rows feed the server-side
+archive, the GBUF replay, the LTE-reset tracker and the `last_reboot` /
+`last_gps_revive` state of the Knot status card (the separate 15-minute
+download the card used before is gone). Right after a coverage gap the
+download is forced, as usual.
+
+The **KNOT logs** page gains a **Download now** button (POST
+`/api/knot/logs/fetch`): it forces the download immediately in a
+background thread, then polls the archive list and opens the new
+snapshot when it lands (~2-60 s depending on LTE).
+
 Since v1.36.3 the card also shows the **GPS revive** row: the time of the
 last `gps-revive` re-initialization (the KNOT-side scheduler that re-inits
 the GPS port after 15 minutes with 0 satellites — see the GPS recovery

@@ -71,6 +71,11 @@ POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "60"))
 NIGHT_START = int(os.environ.get("NIGHT_START", "22"))
 NIGHT_END = int(os.environ.get("NIGHT_END", "7"))
 POLL_SECONDS_NIGHT = int(os.environ.get("POLL_SECONDS_NIGHT", "0"))
+# Eco mode (v1.36.0): night values also apply when the boat has been
+# stationary (speed < STATIONARY_SPEED_KN) for STATIONARY_ECO_MINUTES;
+# moving again exits eco immediately.
+GATT_POLL_SECONDS_NIGHT = int(os.environ.get("GATT_POLL_SECONDS_NIGHT", "0"))
+STATIONARY_ECO_MINUTES = int(os.environ.get("STATIONARY_ECO_MINUTES", "10"))
 GPS_POLL_SECONDS = 120   # the GPS monitor call is blocking (~15-20s): dedicated cadence
 GPSBUF_POLL_SECONDS = int(os.environ.get("GPSBUF_POLL_SECONDS", "900"))
 # Archives older than this many days are deleted on each log download
@@ -1193,14 +1198,50 @@ def _cfg(name, default):
     return default
 
 
-def _poll_seconds():
+_stationary_since = None    # when the boat was first seen stationary (eco hysteresis)
+
+
+def _boat_stationary():
+    """True when the last GPS fix is valid and below the stationary threshold."""
+    gps = _state.get("gps") or {}
+    if not gps.get("valid"):
+        return False
+    thr = _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN)
+    return (gps.get("speed_kn") or 99) < thr
+
+
+def _eco_mode():
+    """Eco (reduced polling) when in the night window OR the boat has been
+    stationary for STATIONARY_ECO_MINUTES. Moving again exits immediately."""
+    global _stationary_since
     h = datetime.now().hour
     night = _cfg("POLL_SECONDS_NIGHT", POLL_SECONDS_NIGHT)
     ns = _cfg("NIGHT_START", NIGHT_START)
     ne = _cfg("NIGHT_END", NIGHT_END)
     if night and (h >= ns or h < ne):
+        _stationary_since = None
+        return True
+    if _boat_stationary():
+        if _stationary_since is None:
+            _stationary_since = time.time()
+        mins = max(0, _cfg("STATIONARY_ECO_MINUTES", STATIONARY_ECO_MINUTES))
+        return (time.time() - _stationary_since) >= mins * 60
+    _stationary_since = None
+    return False
+
+
+def _poll_seconds():
+    night = _cfg("POLL_SECONDS_NIGHT", POLL_SECONDS_NIGHT)
+    if night and _eco_mode():
         return max(60, night)
     return max(60, _cfg("POLL_SECONDS", POLL_SECONDS))
+
+
+def _gatt_seconds():
+    night = _cfg("GATT_POLL_SECONDS_NIGHT", GATT_POLL_SECONDS_NIGHT)
+    if night and _eco_mode():
+        return max(60, night)
+    return max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS))
 
 
 def _cfg_snapshot():
@@ -1211,10 +1252,13 @@ def _cfg_snapshot():
         "NIGHT_END": _cfg("NIGHT_END", NIGHT_END),
         "GPS_POLL_SECONDS": max(60, _cfg("GPS_POLL_SECONDS", GPS_POLL_SECONDS)),
         "GATT_POLL_SECONDS": max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS)),
+        "GATT_POLL_SECONDS_NIGHT": _cfg("GATT_POLL_SECONDS_NIGHT", GATT_POLL_SECONDS_NIGHT),
+        "STATIONARY_ECO_MINUTES": max(0, _cfg("STATIONARY_ECO_MINUTES", STATIONARY_ECO_MINUTES)),
         "GPSBUF_POLL_SECONDS": max(60, _cfg("GPSBUF_POLL_SECONDS", GPSBUF_POLL_SECONDS)),
         "GPSBUF_RETENTION_DAYS": max(0, _cfg("GPSBUF_RETENTION_DAYS", GPSBUF_RETENTION_DAYS)),
         "GBUF_WRITE_SECONDS": max(60, _cfg("GBUF_WRITE_SECONDS", GBUF_WRITE_SECONDS)),
         "STATIONARY_SPEED_KN": _cfg_float("STATIONARY_SPEED_KN", STATIONARY_SPEED_KN),
+        "eco_mode": _eco_mode(),
         "GPS_STATIONARY_INTERVAL": max(30, _cfg("GPS_STATIONARY_INTERVAL", GPS_STATIONARY_INTERVAL)),
         "solar_history_days": max(1, _cfg("SOLAR_HISTORY_DAYS", 7)),
         "BLE_DEVICES": _selected_ble_macs() or [],
@@ -1588,7 +1632,7 @@ def bl917_loop():
 def gatt_loop():
     while True:
         fetch_bm6_gatt()
-        time.sleep(max(60, _cfg("GATT_POLL_SECONDS", GATT_POLL_SECONDS)))
+        time.sleep(_gatt_seconds())
 
 
 def fetch_lte():
@@ -2023,7 +2067,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.35.0"
+VERSION = "1.36.0"
 
 
 @app.route("/api/data")
@@ -2032,6 +2076,7 @@ VERSION = "1.35.0"
 def api_data():
     _state["version"] = VERSION
     _state["data_usage"] = data_usage_summary()
+    _state["eco_mode"] = _eco_mode()
     _state["outages"] = outage_summary()
     return jsonify(_state)
 
@@ -2267,6 +2312,8 @@ def api_settings_post():
         "POLL_SECONDS_NIGHT": (0, 3600),
         "GPS_POLL_SECONDS": (60, 3600),
         "GATT_POLL_SECONDS": (60, 3600),
+        "GATT_POLL_SECONDS_NIGHT": (0, 3600),
+        "STATIONARY_ECO_MINUTES": (0, 1440),
         "GPSBUF_POLL_SECONDS": (60, 86400),
         "GPSBUF_RETENTION_DAYS": (0, 3650),
         "GBUF_WRITE_SECONDS": (60, 3600),
@@ -2343,7 +2390,7 @@ def api_settings_post():
         except (TypeError, ValueError):
             return jsonify({"error": k + " must be a number"}), 400
         lo, hi = limits[k]
-        if num == 0 and k == "POLL_SECONDS_NIGHT":
+        if num == 0 and k in ("POLL_SECONDS_NIGHT", "GATT_POLL_SECONDS_NIGHT"):
             pass    # 0 = night mode disattivata
         elif not (lo <= num <= hi):
             return jsonify({"error": k + f" must be between {lo} and {hi}"}), 400
@@ -3145,6 +3192,14 @@ SETTINGS_HTML = """<!DOCTYPE html>
     <span><input id="POLL_SECONDS_NIGHT" type="number" min="60" max="3600"><span class="unit">s</span></span>
   </div>
   <div class="row">
+    <label>Night GATT poll<small>BM6 GATT cycle in eco mode; 0 = same as day</small></label>
+    <span><input id="GATT_POLL_SECONDS_NIGHT" type="number" min="60" max="3600"><span class="unit">s</span></span>
+  </div>
+  <div class="row">
+    <label>Stationary eco delay<small>minutes below the speed threshold before eco mode kicks in</small></label>
+    <span><input id="STATIONARY_ECO_MINUTES" type="number" min="0" max="1440"><span class="unit">min</span></span>
+  </div>
+  <div class="row">
     <label>Night window<small>night mode active from hour... to hour... (local time)</small></label>
     <span><input id="NIGHT_START" type="number" min="0" max="23" style="width:60px"><span class="unit">to</span>
     <input id="NIGHT_END" type="number" min="0" max="23" style="width:60px"><span class="unit">h</span></span>
@@ -3243,9 +3298,9 @@ SETTINGS_HTML = """<!DOCTYPE html>
 <script>
 function esc(s) { const d = document.createElement("div"); d.textContent = s == null ? "" : String(s); return d.innerHTML; }
 const FIELDS = ["POLL_SECONDS", "POLL_SECONDS_NIGHT", "NIGHT_START", "NIGHT_END",
-  "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "GPSBUF_POLL_SECONDS",
-  "GPSBUF_RETENTION_DAYS", "GBUF_WRITE_SECONDS",
-  "STATIONARY_SPEED_KN",
+  "GPS_POLL_SECONDS", "GATT_POLL_SECONDS", "GATT_POLL_SECONDS_NIGHT",
+  "GPSBUF_POLL_SECONDS", "GPSBUF_RETENTION_DAYS", "GBUF_WRITE_SECONDS",
+  "STATIONARY_SPEED_KN", "STATIONARY_ECO_MINUTES",
   "GPS_STATIONARY_INTERVAL", "SOLAR_HISTORY_DAYS"];
 async function load() {
   const d = await (await fetch("api/settings")).json();

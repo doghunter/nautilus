@@ -252,6 +252,16 @@ no-coverage (buffered) points as an orange line — matching the web view.
 }
 ```
 
+## 4a-bis. Eco mode (night OR stationary)
+
+From v1.36.0 the reduced (night) polling values apply when the boat is
+in the night window **or** has been stationary (last GPS fix below
+`STATIONARY_SPEED_KN`) for `STATIONARY_ECO_MINUTES` minutes. The BM6
+GATT cycle gets its own eco value (`GATT_POLL_SECONDS_NIGHT`, 0 = keep
+the day cadence). As soon as the GPS reports movement the day values
+apply again, with no delay. The live status is exposed as `eco_mode`
+in `GET /api/data` and in `GET /api/settings`.
+
 ## 4b. Adaptive GPS reporting
 
 The GPS monitor call to the KNOT is blocking (~15–20 s) and keeps the radio
@@ -312,6 +322,8 @@ restart restores the `.env` values ("Reset all" does the same immediately).
 |---|---|---|
 | `POLL_SECONDS` | 60–3600 | Main BLE/LTE data poll (solar & load sampling included) |
 | `POLL_SECONDS_NIGHT` | 0–3600 | Reduced poll during the night window (0 = night mode off) |
+| `GATT_POLL_SECONDS_NIGHT` | 0–3600 | Reduced BM6 GATT cadence in eco mode (0 = same as day) |
+| `STATIONARY_ECO_MINUTES` | 0–1440 | Minutes below the stationary threshold before eco mode engages |
 | `NIGHT_START` / `NIGHT_END` | 0–23 | Night window, local time |
 | `GPS_POLL_SECONDS` | 60–3600 | GPS cadence while moving |
 | `GATT_POLL_SECONDS` | 60–3600 | BM6 GATT read cadence |

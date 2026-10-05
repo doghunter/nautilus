@@ -380,6 +380,15 @@ curl -s http://localhost:8080/api/data | python3 -m json.tool
 
 ## 7. Troubleshooting
 
+### GPS stays at 0 satellites after a KNOT reboot or LTE reset
+
+The Quectel EC25 modem's GNSS session does not come back on its own after
+an interface LTE reset or a full reboot: `gps monitor` shows 0 satellites
+with data-age equal to the uptime. Deploy the `gps-revive` scheduler on
+the KNOT (every 5 min, 3 consecutive dead checks -> disable/enable the GPS
+port, i.e. a fresh `AT+QGPS` session). Meanwhile the dashboard shows the
+last valid fix, labelled as stale with its age.
+
 | Symptom | Cause | Fix |
 |---|---|---|
 | BM6 voltage missing > 5 min | GATT connection dropped | The thread re-establishes it on the next cycle; `docker logs` shows "GATT BM6 fallito" |

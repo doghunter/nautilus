@@ -2147,7 +2147,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.4"
+VERSION = "1.36.5"
 
 
 @app.route("/api/data")
@@ -3788,10 +3788,12 @@ KNOT_LOGS_HTML = """<!DOCTYPE html>
            border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; }
   .controls .grp { display: flex; flex-direction: column; }
   .hint { color: #64748b; font-size: .75rem; margin-bottom: 12px; }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; overflow: hidden; }
+  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; overflow: clip; }
   table { width: 100%; border-collapse: collapse; font-size: .8rem; }
   th { text-align: left; color: #64748b; font-size: .66rem; text-transform: uppercase;
-       letter-spacing: .5px; padding: 10px 12px; border-bottom: 1px solid #334155; }
+       letter-spacing: .5px; padding: 10px 12px; border-bottom: 1px solid #334155;
+       position: sticky; top: 0; background: #1e293b; z-index: 2;
+       box-shadow: 0 1px 0 #334155, 0 2px 6px rgba(15,23,42,.8); }
   td { padding: 7px 12px; border-bottom: 1px solid #172033; vertical-align: top;
        font-family: ui-monospace, Consolas, monospace; }
   td.time { white-space: nowrap; color: #94a3b8; }

@@ -168,6 +168,16 @@ When the KNOT itself is unreachable the card says so explicitly. This pairs
 with the KNOT-side watchdog script (ping CHR → LTE reset → reboot): the card
 tells you from shore whether the watchdog should be reacting.
 
+### SIM usage report tool
+
+`tools/nautilus-usage-report.py` (run on the telemetry LXC, needs docker
+access to the two containers) compares the SIM data usage before and
+after the 2026-10-06 cadence changes: per-day rx/tx table, daily
+averages, saving percentage and monthly projection against the 1000 MB
+budget. Output goes to stdout and to
+`/root/DOC-Hermes/nautilus-usage-report.md`. Days without KNOT
+connectivity have no rows (the WireGuard counters live on the KNOT).
+
 ### Poll on demand (v1.36.6)
 
 The dashboard header gains a **Poll KNOT now** button (POST

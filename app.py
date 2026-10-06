@@ -2120,6 +2120,27 @@ def outage_summary():
                 "error": str(exc)}
 
 
+def _poll_once():
+    """One full manual polling cycle (all REST fetchers + samples).
+
+    Used by POST /api/poll/now (dashboard "Poll KNOT now" button): runs
+    in its own thread, independent of the polling cadences, so the
+    Settings thresholds can be raised without losing on-demand data.
+    The KNOT log download is NOT forced here (it keeps its own
+    GPSBUF_POLL_SECONDS cadence / knot-logs button). fetch_gps is
+    blocking (15-20 s) and fetch_bm6_gatt makes several calls - that is
+    fine in a background thread.
+    """
+    fetch_devices()
+    log_solar_sample()
+    log_load_sample()
+    fetch_lte()
+    fetch_knot_status()
+    log_data_usage()
+    fetch_gps()          # blocking 15-20 s
+    fetch_bm6_gatt()     # connection is persistent, calls are idempotent
+
+
 def poll_loop():
     global _knot_tunnel_was_up
     while True:
@@ -2147,7 +2168,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.5"
+VERSION = "1.36.6"
 
 
 @app.route("/api/data")
@@ -2354,6 +2375,28 @@ def api_knot_logs_fetch():
             log.warning("Manual KNOT log fetch failed: %s", exc)
     import threading
     threading.Thread(target=_do_fetch, daemon=True).start()
+    return jsonify({"status": "started"})
+
+
+@app.route("/api/poll/now", methods=["POST"])
+@app.route("/nautilus/api/poll/now", methods=["POST"])
+@app.route(URL_PREFIX_ALIAS + "/api/poll/now", methods=["POST"])
+def api_poll_now():
+    """Manual poll (dashboard "Poll KNOT now" button).
+
+    Forces one full polling cycle immediately, independent of the
+    Settings cadences, so the boat can be polled less often (SIM
+    savings) while the user can still get fresh data on demand.
+    The dashboard already refreshes /api/data every 5 s, so the cards
+    pick the new values up on their own.
+    """
+    def _do():
+        try:
+            _poll_once()
+        except Exception as exc:
+            log.warning("Manual poll failed: %s", exc)
+    import threading
+    threading.Thread(target=_do, daemon=True).start()
     return jsonify({"status": "started"})
 
 
@@ -2644,6 +2687,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <h1>⚓ Nautilus Telemetry</h1>
   <span id="status">loading…</span>
   <span class="ver" id="version"></span>
+  <button id="poll-now" onclick="pollNow()" title="Poll the KNOT now, regardless of the Settings cadences" style="font:inherit;font-size:.78rem;color:#38bdf8;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b;cursor:pointer">&#8635; Poll KNOT now</button>
   <a href="track" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Track history →</a>
   <a href="stats" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Stats →</a>
   <a href="settings" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Settings →</a>
@@ -3078,6 +3122,25 @@ window._showMap = function(mode) {
   if (bg) bg.classList.toggle("active", mode === "gmaps");
   if (mode === "nautical" && window._nautilusMap) window._nautilusMap.invalidateSize();
 };
+async function pollNow() {
+  const btn = document.getElementById("poll-now");
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = "\u21bb polling\u2026";
+  document.getElementById("status").textContent = "polling KNOT\u2026";
+  try {
+    const r = await fetch("api/poll/now", { method: "POST" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+  } catch (e) {
+    document.getElementById("status").textContent = "poll failed: " + e;
+  }
+  // the GPS call alone takes 15-20 s; cards refresh on their own every 5 s
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.innerHTML = "&#8635; Poll KNOT now";
+  }, 30000);
+}
+
 refresh();
 setInterval(refresh, 5000);
 

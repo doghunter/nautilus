@@ -168,6 +168,18 @@ When the KNOT itself is unreachable the card says so explicitly. This pairs
 with the KNOT-side watchdog script (ping CHR → LTE reset → reboot): the card
 tells you from shore whether the watchdog should be reacting.
 
+### Poll on demand (v1.36.6)
+
+The dashboard header gains a **Poll KNOT now** button (POST
+`/api/poll/now`): it forces one full polling cycle (BLE devices,
+solar/load samples, LTE, tunnel status, data usage, GPS, BM6 GATT) in a
+background thread, independent of the Settings cadences. The cards pick
+the fresh values up on their own (they already poll `/api/data` every
+5 s). This decouples viewing from transmission: the Settings thresholds
+can be raised (SIM savings) while keeping on-demand data on the dashboard.
+The KNOT log download is NOT forced by this button (it keeps its own
+hourly cadence; the knot-logs page has its own "Download now").
+
 ### Single log download + manual fetch (v1.36.4)
 
 There is now exactly **one** `/rest/log` download in the app: the one

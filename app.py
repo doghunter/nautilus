@@ -2169,7 +2169,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.7"
+VERSION = "1.36.8"
 
 
 @app.route("/api/data")
@@ -2630,56 +2630,66 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cg stroke='%2338bdf8' stroke-width='5' stroke-linecap='round' fill='none'%3E%3Ccircle cx='32' cy='15' r='6'/%3E%3Cline x1='32' y1='21' x2='32' y2='52'/%3E%3Cline x1='20' y1='30' x2='44' y2='30'/%3E%3Cpath d='M 14 40 C 14 55, 50 55, 50 40'/%3E%3Cline x1='14' y1='40' x2='20' y2='44'/%3E%3Cline x1='50' y1='40' x2='44' y2='44'/%3E%3C/g%3E%3C/svg%3E">
 <title>Nautilus Telemetry</title>
 <style>
+/* theme: dark default; html[data-theme="light"] overrides */
+  :root { --bg: #0f172a; --bg2: #0f172a; --card: #1e293b; --border: #334155;
+          --text: #e2e8f0; --text-strong: #f1f5f9; --text-dim: #94a3b8;
+          --text-muted: #64748b; --chip-idle-bg: #1e3a5f; --row-border: #172033;
+          --warn-bg: #2a2302; --err-bg: #2d0a0a; }
+  html[data-theme="light"] { --bg: #f1f5f9; --bg2: #ffffff; --card: #ffffff;
+          --border: #cbd5e1; --text: #1e293b; --text-strong: #0f172a;
+          --text-dim: #475569; --text-muted: #64748b; --chip-idle-bg: #e0f2fe;
+          --row-border: #e2e8f0; --warn-bg: #fef3c7; --err-bg: #fee2e2; }
+
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    background: #0f172a; color: #e2e8f0;
+    background: var(--bg); color: var(--text);
     font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
     min-height: 100vh; padding: 24px;
   }
   header { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
   h1 { font-size: 1.5rem; color: #38bdf8; letter-spacing: .5px; }
-  #status { font-size: .8rem; color: #94a3b8; }
+  #status { font-size: .8rem; color: var(--text-dim); }
   #status.err { color: #f87171; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; }
   .card {
-    background: #1e293b; border: 1px solid #334155; border-radius: 14px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
     padding: 22px; box-shadow: 0 4px 14px rgba(0,0,0,.35);
   }
-  .card h2 { font-size: 1.05rem; font-weight: 600; color: #f1f5f9; display: flex;
+  .card h2 { font-size: 1.05rem; font-weight: 600; color: var(--text-strong); display: flex;
              justify-content: space-between; align-items: center; gap: 8px; }
-  .card h2 small { color: #64748b; font-weight: 400; font-size: .72rem; }
+  .card h2 small { color: var(--text-muted); font-weight: 400; font-size: .72rem; }
   .chip { font-size: .68rem; padding: 3px 9px; border-radius: 999px; font-weight: 600; }
   .chip.ok   { background: #064e3b; color: #34d399; }
   .chip.warn { background: #451a03; color: #fbbf24; }
   .chip.bad  { background: #7f1d1d; color: #f87171; }
-  .chip.idle { background: #1e3a5f; color: #7dd3fc; }
+  .chip.idle { background: var(--chip-idle-bg); color: #7dd3fc; }
   .main-val { font-size: 2.6rem; font-weight: 700; color: #38bdf8; margin: 10px 0 2px; }
-  .main-val small { font-size: 1rem; color: #64748b; font-weight: 400; }
+  .main-val small { font-size: 1rem; color: var(--text-muted); font-weight: 400; }
   .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 16px; }
-  .metric { background: #0f172a; border-radius: 10px; padding: 10px 12px; }
-  .metric .k { font-size: .66rem; color: #64748b; text-transform: uppercase; letter-spacing: .5px; }
-  .metric .v { font-size: 1.15rem; font-weight: 600; color: #f1f5f9; margin-top: 2px; }
+  .metric { background: var(--bg); border-radius: 10px; padding: 10px 12px; }
+  .metric .k { font-size: .66rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+  .metric .v { font-size: 1.15rem; font-weight: 600; color: var(--text-strong); margin-top: 2px; }
   .foot { margin-top: 16px; font-size: .72rem; color: #475569; word-break: break-all; }
   .foot .row { margin-top: 3px; }
-  .note { margin-top: 14px; font-size: .74rem; color: #94a3b8; background: #0f172a;
+  .note { margin-top: 14px; font-size: .74rem; color: var(--text-dim); background: var(--bg);
           border-left: 3px solid #334155; padding: 8px 10px; border-radius: 6px; }
-  .bar { height: 7px; background: #0f172a; border-radius: 4px; margin-top: 14px; overflow: hidden; }
+  .bar { height: 7px; background: var(--bg); border-radius: 4px; margin-top: 14px; overflow: hidden; }
   .bar > div { height: 100%; background: linear-gradient(90deg,#22c55e,#38bdf8); border-radius: 4px; }
-  .map-wrap { margin-top: 14px; border-radius: 10px; overflow: hidden; border: 1px solid #334155; }
+  .map-wrap { margin-top: 14px; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
   .map-wrap iframe, .map-wrap #map { display: block; width: 100%; height: 320px; border: 0; filter: saturate(.85) brightness(.9); }
   .map-toggle { display: flex; gap: 8px; margin-top: 14px; }
   .map-toggle button {
     font: inherit; font-size: .74rem; padding: 5px 12px; border-radius: 8px;
-    border: 1px solid #334155; background: #0f172a; color: #94a3b8; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg); color: var(--text-dim); cursor: pointer;
   }
-  .map-toggle button.active { background: #1e3a5f; color: #7dd3fc; border-color: #38bdf8; }
+  .map-toggle button.active { background: var(--chip-idle-bg); color: #7dd3fc; border-color: #38bdf8; }
   .boat-icon { display: flex; align-items: center; justify-content: center; font-size: 22px;
                filter: drop-shadow(0 2px 3px rgba(0,0,0,.6)); background: none; border: 0; }
   .ver { font-size: .7rem; color: #475569; align-self: center; }
   .gmaps-link { display: inline-block; margin-top: 10px; font-size: .78rem; color: #38bdf8;
-                 text-decoration: none; border: 1px solid #334155; padding: 5px 10px; border-radius: 8px; }
-  .gmaps-link:hover { background: #0f172a; }
+                 text-decoration: none; border: 1px solid var(--border); padding: 5px 10px; border-radius: 8px; }
+  .gmaps-link:hover { background: var(--bg); }
   @media (max-width: 480px) { body { padding: 12px; } .main-val { font-size: 2.1rem; } }
 </style>
 </head>
@@ -2688,10 +2698,24 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <h1>⚓ Nautilus Telemetry</h1>
   <span id="status">loading…</span>
   <span class="ver" id="version"></span>
-  <button id="poll-now" onclick="pollNow()" title="Poll the KNOT now, regardless of the Settings cadences" style="font:inherit;font-size:.78rem;color:#38bdf8;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b;cursor:pointer">&#8635; Poll KNOT now</button>
-  <a href="track" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Track history →</a>
-  <a href="stats" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Stats →</a>
-  <a href="settings" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid #334155;padding:5px 10px;border-radius:8px;background:#1e293b">Settings →</a>
+  <button id="poll-now" onclick="pollNow()" title="Poll the KNOT now, regardless of the Settings cadences" style="font:inherit;font-size:.78rem;color:#38bdf8;border:1px solid var(--border);padding:5px 10px;border-radius:8px;background:#1e293b;cursor:pointer">&#8635; Poll KNOT now</button>
+  <a href="track" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid var(--border);padding:5px 10px;border-radius:8px;background:var(--card)">Track history →</a>
+  <a href="stats" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid var(--border);padding:5px 10px;border-radius:8px;background:var(--card)">Stats →</a>
+  <a href="settings" style="font-size:.78rem;color:#38bdf8;text-decoration:none;border:1px solid var(--border);padding:5px 10px;border-radius:8px;background:var(--card)">Settings →</a>
+  <button id="theme-toggle" onclick="toggleTheme()" title="light / dark mode" style="font:inherit;font-size:1rem;border:1px solid var(--border);padding:4px 9px;border-radius:8px;background:var(--card);cursor:pointer">&#9790;</button>
+  <script>
+  function _applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    const b = document.getElementById("theme-toggle");
+    if (b) b.innerHTML = t === "light" ? "&#9728;" : "&#9790;";
+  }
+  function toggleTheme() {
+    const cur = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    localStorage.setItem("nautilus-theme", cur);
+    _applyTheme(cur);
+  }
+  _applyTheme(localStorage.getItem("nautilus-theme") || "dark");
+  </script>
 </header>
 <div class="grid">
   <div class="card" id="bm6"></div>
@@ -3233,35 +3257,45 @@ STATS_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Energy stats · Nautilus</title>
 <style>
+/* theme: dark default; html[data-theme="light"] overrides */
+  :root { --bg: #0f172a; --bg2: #0f172a; --card: #1e293b; --border: #334155;
+          --text: #e2e8f0; --text-strong: #f1f5f9; --text-dim: #94a3b8;
+          --text-muted: #64748b; --chip-idle-bg: #1e3a5f; --row-border: #172033;
+          --warn-bg: #2a2302; --err-bg: #2d0a0a; }
+  html[data-theme="light"] { --bg: #f1f5f9; --bg2: #ffffff; --card: #ffffff;
+          --border: #cbd5e1; --text: #1e293b; --text-strong: #0f172a;
+          --text-dim: #475569; --text-muted: #64748b; --chip-idle-bg: #e0f2fe;
+          --row-border: #e2e8f0; --warn-bg: #fef3c7; --err-bg: #fee2e2; }
+
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", system-ui, sans-serif;
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif;
          min-height: 100vh; padding: 20px; }
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
   h1 { font-size: 1.3rem; color: #38bdf8; letter-spacing: .5px; }
-  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid #334155;
-           padding: 5px 10px; border-radius: 8px; background: #1e293b; }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid var(--border);
+           padding: 5px 10px; border-radius: 8px; background: var(--card); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
           padding: 18px; margin-bottom: 20px; overflow-x: auto; }
-  .card h2 { font-size: 1.05rem; font-weight: 600; color: #f1f5f9; margin-bottom: 10px; }
+  .card h2 { font-size: 1.05rem; font-weight: 600; color: var(--text-strong); margin-bottom: 10px; }
   table { border-collapse: collapse; width: 100%; font-size: .88rem; }
-  th, td { padding: 7px 12px; text-align: left; border-bottom: 1px solid #334155; }
-  th { color: #64748b; font-size: .7rem; text-transform: uppercase; letter-spacing: .5px; }
+  th, td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--text-muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .5px; }
   td.num { text-align: right; font-variant-numeric: tabular-nums; }
   .pos { color: #f59e0b; } .neg { color: #a78bfa; } .net { color: #34d399; }
   .bars { display: flex; flex-direction: column; gap: 6px; min-width: 420px; }
   .brow { display: grid; grid-template-columns: 84px 1fr 84px; align-items: center; gap: 8px;
-          font-size: .78rem; color: #94a3b8; }
-  .track { height: 14px; background: #0f172a; border-radius: 7px; overflow: hidden;
-           display: flex; border: 1px solid #334155; }
+          font-size: .78rem; color: var(--text-dim); }
+  .track { height: 14px; background: var(--bg); border-radius: 7px; overflow: hidden;
+           display: flex; border: 1px solid var(--border); }
   .seg-solar { background: #f59e0b; } .seg-load { background: #a78bfa; }
-  .note { color: #64748b; font-size: .75rem; margin-top: 10px; }
-  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: .78rem; color: #94a3b8; }
+  .note { color: var(--text-muted); font-size: .75rem; margin-top: 10px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; font-size: .78rem; color: var(--text-dim); }
   .legend span { display: inline-flex; align-items: center; gap: 6px; }
   .legend i { width: 18px; height: 4px; border-radius: 2px; display: inline-block; }
   .mcharts { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 14px; }
-  .mchart { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 12px; }
-  .mchart h3 { font-size: .82rem; font-weight: 600; color: #f1f5f9; display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .mchart { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .mchart h3 { font-size: .82rem; font-weight: 600; color: var(--text-strong); display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
   .mchart h3 i { width: 14px; height: 4px; border-radius: 2px; display: inline-block; }
 </style>
 </head>
@@ -3269,6 +3303,20 @@ STATS_HTML = """<!DOCTYPE html>
 <header>
   <h1>&#9889; Energy stats</h1>
   <a class="back" href="./">&#8592; Dashboard</a>
+  <button id="theme-toggle" onclick="toggleTheme()" title="light / dark mode" style="font:inherit;font-size:1rem;border:1px solid var(--border);padding:4px 9px;border-radius:8px;background:var(--card);cursor:pointer">&#9790;</button>
+  <script>
+  function _applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    const b = document.getElementById("theme-toggle");
+    if (b) b.innerHTML = t === "light" ? "&#9728;" : "&#9790;";
+  }
+  function toggleTheme() {
+    const cur = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    localStorage.setItem("nautilus-theme", cur);
+    _applyTheme(cur);
+  }
+  _applyTheme(localStorage.getItem("nautilus-theme") || "dark");
+  </script>
 </header>
 <div class="card">
   <h2>&#2600;&#65039; Solar production vs &#128506; current used — by month (Wh)</h2>
@@ -3381,26 +3429,36 @@ SETTINGS_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Settings · Nautilus</title>
 <style>
+/* theme: dark default; html[data-theme="light"] overrides */
+  :root { --bg: #0f172a; --bg2: #0f172a; --card: #1e293b; --border: #334155;
+          --text: #e2e8f0; --text-strong: #f1f5f9; --text-dim: #94a3b8;
+          --text-muted: #64748b; --chip-idle-bg: #1e3a5f; --row-border: #172033;
+          --warn-bg: #2a2302; --err-bg: #2d0a0a; }
+  html[data-theme="light"] { --bg: #f1f5f9; --bg2: #ffffff; --card: #ffffff;
+          --border: #cbd5e1; --text: #1e293b; --text-strong: #0f172a;
+          --text-dim: #475569; --text-muted: #64748b; --chip-idle-bg: #e0f2fe;
+          --row-border: #e2e8f0; --warn-bg: #fef3c7; --err-bg: #fee2e2; }
+
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", system-ui, sans-serif;
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif;
          min-height: 100vh; padding: 20px; max-width: 720px; margin: 0 auto; }
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 18px; }
   h1 { font-size: 1.3rem; color: #38bdf8; letter-spacing: .5px; }
-  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid #334155;
-           padding: 5px 10px; border-radius: 8px; background: #1e293b; }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px;
+  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid var(--border);
+           padding: 5px 10px; border-radius: 8px; background: var(--card); }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px;
           padding: 18px; margin-bottom: 18px; }
-  .card h2 { font-size: 1rem; font-weight: 600; color: #f1f5f9; margin-bottom: 4px; }
-  .card p.hint { color: #64748b; font-size: .72rem; margin-bottom: 14px; }
+  .card h2 { font-size: 1rem; font-weight: 600; color: var(--text-strong); margin-bottom: 4px; }
+  .card p.hint { color: var(--text-muted); font-size: .72rem; margin-bottom: 14px; }
   .row { display: flex; align-items: center; justify-content: space-between; gap: 12px;
-         padding: 10px 0; border-bottom: 1px solid #334155; }
+         padding: 10px 0; border-bottom: 1px solid var(--border); }
   .row:last-child { border-bottom: 0; }
   .row label { font-size: .85rem; }
-  .row label small { display: block; color: #64748b; font-size: .7rem; margin-top: 2px; }
-  .row input { width: 110px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155;
+  .row label small { display: block; color: var(--text-muted); font-size: .7rem; margin-top: 2px; }
+  .row input { width: 110px; background: var(--bg); color: var(--text); border: 1px solid var(--border);
                border-radius: 8px; padding: 7px 10px; font-size: .85rem; text-align: right; }
-  .row .unit { color: #64748b; font-size: .75rem; width: 46px; }
+  .row .unit { color: var(--text-muted); font-size: .75rem; width: 46px; }
   .btn { background: #1d4ed8; color: #fff; border: 0; border-radius: 8px; padding: 10px 22px;
          font-size: .85rem; cursor: pointer; margin-top: 6px; }
   .btn:hover { background: #2563eb; }
@@ -3413,6 +3471,20 @@ SETTINGS_HTML = """<!DOCTYPE html>
 <header>
   <h1>&#9881;&#65039; Settings</h1>
   <a class="back" href="./">&#8592; Dashboard</a>
+  <button id="theme-toggle" onclick="toggleTheme()" title="light / dark mode" style="font:inherit;font-size:1rem;border:1px solid var(--border);padding:4px 9px;border-radius:8px;background:var(--card);cursor:pointer">&#9790;</button>
+  <script>
+  function _applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    const b = document.getElementById("theme-toggle");
+    if (b) b.innerHTML = t === "light" ? "&#9728;" : "&#9790;";
+  }
+  function toggleTheme() {
+    const cur = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    localStorage.setItem("nautilus-theme", cur);
+    _applyTheme(cur);
+  }
+  _applyTheme(localStorage.getItem("nautilus-theme") || "dark");
+  </script>
 </header>
 
 <div class="card">
@@ -3500,7 +3572,7 @@ SETTINGS_HTML = """<!DOCTYPE html>
   </div>
 
   <div id="vic-modal" style="display:none;position:fixed;inset:0;background:#0009;z-index:50;align-items:center;justify-content:center" onclick="if(event.target===this)vicClose()">
-    <div style="background:#1e293b;border:1px solid #33415580;border-radius:12px;padding:18px;width:min(560px,92vw);max-height:88vh;overflow:auto">
+    <div style="background:#1e293b;border:1px solid var(--border)80;border-radius:12px;padding:18px;width:min(560px,92vw);max-height:88vh;overflow:auto">
       <h3 style="margin:0 0 12px" id="vic-modal-title">Victron device</h3>
       <div style="display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center">
         <label style="font-size:.75rem;color:#94a3b8">MAC</label>
@@ -3555,7 +3627,7 @@ function vicRender(devs) {
     return;
   }
   box.innerHTML = _vicDevs.map((d, i) => `
-  <div onclick="vicOpen(${i})" style="display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid #33415580;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">
+  <div onclick="vicOpen(${i})" style="display:flex;justify-content:space-between;align-items:center;gap:10px;border:1px solid var(--border)80;border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer">
     <div>
       <div style="font-weight:600">${esc(vicTitle(d))}</div>
       <div style="font-size:.75rem;color:#94a3b8">${esc(d.mac)}${d.serial ? " \u00b7 " + esc(d.serial) : ""}${d.key ? " \u00b7 key \u2713" : " \u00b7 no key"}</div>
@@ -3654,7 +3726,7 @@ async function loadBle() {
       const checked = sel.has(dev.mac.toUpperCase()) ? " checked" : "";
       const tag = dev.persist ? " <span style='color:#34d399;font-size:.68rem'>&#9679; persistent</span>" : "";
       const rssi = dev.rssi != null ? dev.rssi + " dBm" : "no signal";
-      return "<label style='display:block;padding:7px 0;border-bottom:1px solid #334155;cursor:pointer'>" +
+      return "<label style='display:block;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer'>" +
         "<span style='display:flex;align-items:center;gap:10px'>" +
         "<input type='checkbox' class='ble-chk' value='" + dev.mac + "'" + checked + ">" +
         "<span style='flex:1'><b style='font-size:.8rem'>" + (dev.name || "(unnamed)") + "</b>" + tag +
@@ -3663,7 +3735,7 @@ async function loadBle() {
         "<span style='display:flex;align-items:center;gap:10px;margin-top:5px'>" +
         "<span style='width:16px'></span>" +
         "<input type='text' class='ble-note' data-mac='" + dev.mac + "' value='" + String(dev.note || "").replace(/'/g, "&#39;") + "'" +
-        " placeholder='note (used as the device title in the Victron list)' maxlength='40' style='flex:1;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:5px 8px;font-size:.78rem'></span></label>";
+        " placeholder='note (used as the device title in the Victron list)' maxlength='40' style='flex:1;background:#0f172a;color:#e2e8f0;border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem'></span></label>";
     }).join("");
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>KNOT unreachable</p>";
@@ -3702,27 +3774,37 @@ TRACK_HTML = """<!DOCTYPE html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cg stroke='%2338bdf8' stroke-width='5' stroke-linecap='round' fill='none'%3E%3Ccircle cx='32' cy='15' r='6'/%3E%3Cline x1='32' y1='21' x2='32' y2='52'/%3E%3Cline x1='20' y1='30' x2='44' y2='30'/%3E%3Cpath d='M 14 40 C 14 55, 50 55, 50 40'/%3E%3Cline x1='14' y1='40' x2='20' y2='44'/%3E%3Cline x1='50' y1='40' x2='44' y2='44'/%3E%3C/g%3E%3C/svg%3E">
 <title>Track history · Nautilus</title>
 <style>
+/* theme: dark default; html[data-theme="light"] overrides */
+  :root { --bg: #0f172a; --bg2: #0f172a; --card: #1e293b; --border: #334155;
+          --text: #e2e8f0; --text-strong: #f1f5f9; --text-dim: #94a3b8;
+          --text-muted: #64748b; --chip-idle-bg: #1e3a5f; --row-border: #172033;
+          --warn-bg: #2a2302; --err-bg: #2d0a0a; }
+  html[data-theme="light"] { --bg: #f1f5f9; --bg2: #ffffff; --card: #ffffff;
+          --border: #cbd5e1; --text: #1e293b; --text-strong: #0f172a;
+          --text-dim: #475569; --text-muted: #64748b; --chip-idle-bg: #e0f2fe;
+          --row-border: #e2e8f0; --warn-bg: #fef3c7; --err-bg: #fee2e2; }
+
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", system-ui, sans-serif;
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif;
          min-height: 100vh; padding: 20px; }
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
   h1 { font-size: 1.3rem; color: #38bdf8; letter-spacing: .5px; }
-  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid #334155;
-           padding: 5px 10px; border-radius: 8px; background: #1e293b; }
+  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid var(--border);
+           padding: 5px 10px; border-radius: 8px; background: var(--card); }
   .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 14px;
-              background: #1e293b; padding: 14px; border-radius: 12px; border: 1px solid #334155; }
-  .controls label { display: block; font-size: .66rem; color: #64748b; text-transform: uppercase;
+              background: var(--card); padding: 14px; border-radius: 12px; border: 1px solid var(--border); }
+  .controls label { display: block; font-size: .66rem; color: var(--text-muted); text-transform: uppercase;
                     letter-spacing: .5px; margin-bottom: 4px; }
   .controls input, .controls select { font: inherit; font-size: .85rem; padding: 6px 8px;
-           border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; }
+           border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .controls button { font: inherit; font-size: .85rem; padding: 7px 16px; border-radius: 8px;
            border: 0; background: #2563eb; color: #fff; cursor: pointer; }
   .controls button:hover { background: #1d4ed8; }
-  #summary { font-size: .78rem; color: #94a3b8; margin-left: auto; align-self: center; }
+  #summary { font-size: .78rem; color: var(--text-dim); margin-left: auto; align-self: center; }
   #map { height: calc(100vh - 210px); min-height: 400px; border-radius: 12px;
-         border: 1px solid #334155; }
-  .leaflet-tooltip { background: #1e293b !important; color: #e2e8f0 !important;
+         border: 1px solid var(--border); }
+  .leaflet-tooltip { background: var(--card) !important; color: var(--text) !important;
                      border: 1px solid #38bdf8 !important; border-radius: 8px;
                      font-size: .78rem; box-shadow: 0 4px 10px rgba(0,0,0,.5); }
   .leaflet-tooltip b { color: #38bdf8; }
@@ -3732,6 +3814,20 @@ TRACK_HTML = """<!DOCTYPE html>
 <header>
   <h1>⚓ Track history</h1>
   <a class="back" href="./">&#8592; Dashboard</a>
+  <button id="theme-toggle" onclick="toggleTheme()" title="light / dark mode" style="font:inherit;font-size:1rem;border:1px solid var(--border);padding:4px 9px;border-radius:8px;background:var(--card);cursor:pointer">&#9790;</button>
+  <script>
+  function _applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    const b = document.getElementById("theme-toggle");
+    if (b) b.innerHTML = t === "light" ? "&#9728;" : "&#9790;";
+  }
+  function toggleTheme() {
+    const cur = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    localStorage.setItem("nautilus-theme", cur);
+    _applyTheme(cur);
+  }
+  _applyTheme(localStorage.getItem("nautilus-theme") || "dark");
+  </script>
 </header>
 <div class="controls">
   <div><label>From</label><input type="date" id="d-from"></div>
@@ -3836,45 +3932,69 @@ KNOT_LOGS_HTML = """<!DOCTYPE html>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230f172a'/%3E%3Cg stroke='%2338bdf8' stroke-width='5' stroke-linecap='round' fill='none'%3E%3Ccircle cx='32' cy='15' r='6'/%3E%3Cline x1='32' y1='21' x2='32' y2='52'/%3E%3Cline x1='20' y1='30' x2='44' y2='30'/%3E%3Cpath d='M 14 40 C 14 55, 50 55, 50 40'/%3E%3Cline x1='14' y1='40' x2='20' y2='44'/%3E%3Cline x1='50' y1='40' x2='44' y2='44'/%3E%3C/g%3E%3C/svg%3E">
 <title>KNOT logs · {{BOAT}}</title>
 <style>
+/* theme: dark default; html[data-theme="light"] overrides */
+  :root { --bg: #0f172a; --bg2: #0f172a; --card: #1e293b; --border: #334155;
+          --text: #e2e8f0; --text-strong: #f1f5f9; --text-dim: #94a3b8;
+          --text-muted: #64748b; --chip-idle-bg: #1e3a5f; --row-border: #172033;
+          --warn-bg: #2a2302; --err-bg: #2d0a0a; }
+  html[data-theme="light"] { --bg: #f1f5f9; --bg2: #ffffff; --card: #ffffff;
+          --border: #cbd5e1; --text: #1e293b; --text-strong: #0f172a;
+          --text-dim: #475569; --text-muted: #64748b; --chip-idle-bg: #e0f2fe;
+          --row-border: #e2e8f0; --warn-bg: #fef3c7; --err-bg: #fee2e2; }
+
   :root { color-scheme: dark; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: #0f172a; color: #e2e8f0; font-family: "Segoe UI", system-ui, sans-serif;
+  body { background: var(--bg); color: var(--text); font-family: "Segoe UI", system-ui, sans-serif;
          min-height: 100vh; padding: 20px; }
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 14px; }
   h1 { font-size: 1.3rem; color: #38bdf8; letter-spacing: .5px; }
-  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid #334155;
-           padding: 5px 10px; border-radius: 8px; background: #1e293b; }
+  a.back { color: #7dd3fc; font-size: .82rem; text-decoration: none; border: 1px solid var(--border);
+           padding: 5px 10px; border-radius: 8px; background: var(--card); }
   .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: end; margin-bottom: 14px;
-              background: #1e293b; padding: 14px; border-radius: 12px; border: 1px solid #334155; }
-  .controls label { display: block; font-size: .66rem; color: #64748b; text-transform: uppercase;
+              background: var(--card); padding: 14px; border-radius: 12px; border: 1px solid var(--border); }
+  .controls label { display: block; font-size: .66rem; color: var(--text-muted); text-transform: uppercase;
                     letter-spacing: .5px; margin-bottom: 4px; }
   .controls select, .controls input { font: inherit; font-size: .85rem; padding: 6px 8px;
-           border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: #e2e8f0; }
+           border-radius: 8px; border: 1px solid var(--border); background: var(--bg); color: var(--text); }
   .controls .grp { display: flex; flex-direction: column; }
-  .hint { color: #64748b; font-size: .75rem; margin-bottom: 12px; }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; overflow: clip; }
+  .hint { color: var(--text-muted); font-size: .75rem; margin-bottom: 12px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; overflow: clip; }
   table { width: 100%; border-collapse: collapse; font-size: .8rem; }
-  th { text-align: left; color: #64748b; font-size: .66rem; text-transform: uppercase;
-       letter-spacing: .5px; padding: 10px 12px; border-bottom: 1px solid #334155;
-       position: sticky; top: 0; background: #1e293b; z-index: 2;
+  th { text-align: left; color: var(--text-muted); font-size: .66rem; text-transform: uppercase;
+       letter-spacing: .5px; padding: 10px 12px; border-bottom: 1px solid var(--border);
+       position: sticky; top: 0; background: var(--card); z-index: 2;
        box-shadow: 0 1px 0 #334155, 0 2px 6px rgba(15,23,42,.8); }
-  td { padding: 7px 12px; border-bottom: 1px solid #172033; vertical-align: top;
+  td { padding: 7px 12px; border-bottom: 1px solid var(--row-border); vertical-align: top;
        font-family: ui-monospace, Consolas, monospace; }
-  td.time { white-space: nowrap; color: #94a3b8; }
-  td.topics { white-space: nowrap; color: #64748b; }
-  tr.warn td { background: #2a2302; }
+  td.time { white-space: nowrap; color: var(--text-dim); }
+  td.topics { white-space: nowrap; color: var(--text-muted); }
+  tr.warn td { background: var(--warn-bg); }
   tr.warn td.topics { color: #f59e0b; }
-  tr.err td { background: #2d0a0a; }
+  tr.err td { background: var(--err-bg); }
   tr.err td.topics { color: #ef4444; }
   .pill { display: inline-block; font-size: .68rem; padding: 2px 9px; border-radius: 999px;
-          background: #1e3a5f; color: #7dd3fc; }
-  .count { color: #64748b; font-size: .78rem; margin: 10px 2px; }
+          background: var(--chip-idle-bg); color: #7dd3fc; }
+  .count { color: var(--text-muted); font-size: .78rem; margin: 10px 2px; }
 </style>
 </head>
 <body>
 <header>
   <h1>&#128225; KNOT logs · {{BOAT}}</h1>
   <a class="back" href="./">&#8592; Dashboard</a>
+  <button id="theme-toggle" onclick="toggleTheme()" title="light / dark mode" style="font:inherit;font-size:1rem;border:1px solid var(--border);padding:4px 9px;border-radius:8px;background:var(--card);cursor:pointer">&#9790;</button>
+  <script>
+  function _applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    const b = document.getElementById("theme-toggle");
+    if (b) b.innerHTML = t === "light" ? "&#9728;" : "&#9790;";
+  }
+  function toggleTheme() {
+    const cur = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    localStorage.setItem("nautilus-theme", cur);
+    _applyTheme(cur);
+  }
+  _applyTheme(localStorage.getItem("nautilus-theme") || "dark");
+  </script>
 </header>
 <div class="controls">
   <div class="grp">

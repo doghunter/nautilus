@@ -178,6 +178,19 @@ budget. Output goes to stdout and to
 `/root/DOC-Hermes/nautilus-usage-report.md`. Days without KNOT
 connectivity have no rows (the WireGuard counters live on the KNOT).
 
+### Light / dark theme (v1.36.8)
+
+Every page (dashboard, stats, settings, track, KNOT logs) carries a
+sun/moon toggle in the header. The choice is stored in the browser
+(localStorage key `nautilus-theme`) and defaults to dark. The
+structural colors (page/card backgrounds, borders, text tones, chip
+idle background, log row warning/error backgrounds) are CSS variables
+(`--bg`, `--card`, `--border`, `--text`, `--text-strong`, `--text-dim`,
+`--text-muted`, `--chip-idle-bg`, `--row-border`, `--warn-bg`,
+`--err-bg`) overridden by `html[data-theme="light"]`. Chart colors
+generated in JS (SVG strokes) stay the same in both themes; the accent
+color (#38bdf8) is shared.
+
 ### Poll on demand (v1.36.6)
 
 The dashboard header gains a **Poll KNOT now** button (POST

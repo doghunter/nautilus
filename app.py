@@ -1389,14 +1389,15 @@ def _bm6_retain(parsed):
     parsed["soc_est"] = estimate_soc(parsed.get("voltage"))
     if parsed.get("temperature") is not None and BM6_TEMP_OFFSET:
         parsed["temperature"] = round(parsed["temperature"] + BM6_TEMP_OFFSET)
-# BM6 signal: age of the last GATT read (None = never read).
-# > 5 min = the sensor is no longer transmitting (KNOT offline, BM6 off or
-# busy with another BLE connection).
+# BM6 signal: age of the last GATT read (None = never read). The
+# threshold follows the effective GATT cadence (Settings) plus a 120 s
+# grace: an older read means the sensor stopped transmitting (KNOT
+# offline, BM6 off or busy with another BLE connection).
     seen = _bm6_keep.get("voltage_gatt", {}).get("seen_iso")
     if seen:
         age = (datetime.now() - datetime.fromisoformat(seen)).total_seconds()
         parsed["gatt_age_s"] = int(age)
-        parsed["signal_ok"] = age < 300
+        parsed["signal_ok"] = age < (_gatt_seconds() + 120)
     else:
         parsed["gatt_age_s"] = None
         parsed["signal_ok"] = None
@@ -2168,7 +2169,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.6"
+VERSION = "1.36.7"
 
 
 @app.route("/api/data")

@@ -1820,6 +1820,24 @@ def fetch_knot_status():
             timeout=10,
         )
         res = r2.json()
+        # KNOT clock: local time + timezone, shown in the card (clock
+        # mix-ups like a wrong time-zone-name must be visible at a glance)
+        knot_clock = None
+        try:
+            rc = requests.get(
+                f"http://{KNOT_HOST}/rest/system/clock",
+                auth=requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS),
+                timeout=10)
+            ck = rc.json()
+            if ck.get("time"):
+                knot_clock = {
+                    "time": ck.get("time", ""),
+                    "date": ck.get("date", ""),
+                    "tz": ck.get("time-zone-name", ""),
+                    "offset": ck.get("gmt-offset", ""),
+                }
+        except Exception:
+            knot_clock = None
         # board serial number: static, read once per process lifetime
         global _knot_serial
         if _knot_serial is None:
@@ -1880,6 +1898,7 @@ def fetch_knot_status():
             "iccid": iccid,
             "last_reboot": last_reboot,
             "last_gps_revive": _state.get("last_gps_revive"),
+            "knot_clock": knot_clock,
             "operator": operator,
             "band": band,
             "free_memory": free_mem,
@@ -2169,7 +2188,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.9"
+VERSION = "1.36.10"
 
 
 @app.route("/api/data")
@@ -3104,6 +3123,12 @@ async function refresh() {
       </div>`; })() : ""}
       <div class="foot">
         <div class="row">Serial No.: ${esc(ks.serial || "—")}</div>
+        <div class="row">KNOT clock: ${
+          ks.knot_clock
+            ? esc(ks.knot_clock.time) + " " + esc(ks.knot_clock.date) +
+              " \u00b7 " + esc(ks.knot_clock.tz) + " (UTC" +
+              (ks.knot_clock.offset ? esc(ks.knot_clock.offset).replace("+", "+").replace("-", "-") : "") + ")"
+            : "\u2014"}</div>
         <div class="row">Last reboot: ${
           ks.last_reboot
             ? esc(ks.last_reboot.time) + " " + esc(d.tz_label || "") + " · " +

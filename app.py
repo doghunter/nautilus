@@ -2169,7 +2169,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.8"
+VERSION = "1.36.9"
 
 
 @app.route("/api/data")
@@ -3106,7 +3106,7 @@ async function refresh() {
         <div class="row">Serial No.: ${esc(ks.serial || "—")}</div>
         <div class="row">Last reboot: ${
           ks.last_reboot
-            ? esc(ks.last_reboot.time) + " · " +
+            ? esc(ks.last_reboot.time) + " " + esc(d.tz_label || "") + " · " +
               (ks.last_reboot.watchdog
                 ? "<span style='color:#fbbf24'>watchdog</span> (" + esc(ks.last_reboot.cause.replace("router rebooted by ", "")) + ")"
                 : esc(ks.last_reboot.cause))
@@ -3114,7 +3114,7 @@ async function refresh() {
         <div class="row">GPS revive: ${
           ks.last_gps_revive
             ? "<span style='color:#fbbf24'>last re-init</span> at " +
-              esc(ks.last_gps_revive.time)
+              esc(ks.last_gps_revive.time) + " " + esc(d.tz_label || "")
             : "never (satellites OK)"}</div>
         <div class="row">ICCID: ${esc(ks.iccid || "—")}${ks.operator ? " · " + esc(ks.operator) : ""}${ks.band ? " · " + esc(ks.band.split(" ")[0]) : ""}</div>
         <div class="row">

@@ -116,6 +116,7 @@ All configuration is via environment variables (see `.env.example`):
 | `KNOT_HOST` | yes | KNOT address (e.g. its WireGuard IP) |
 | `KNOT_USER` / `KNOT_PASS` | yes | KNOT REST API Basic Auth credentials |
 | `BM6_MAC` / `MPPT_MAC` | yes | MAC addresses of the BLE sensors |
+| `BM6_BATTERY_TYPE` | no | Battery chemistry for the rest-voltage SoC estimate (`lifepo4`, `agm`, `fla`). When set, the dashboard shows the voltage-derived estimate instead of the BM6 firmware SoC (calibrated for lead-acid, meaningless on LiFePO4) |
 | `BOAT_NAME` | no | Boat name shown in the dashboard (default "Nautilus") |
 | `URL_PREFIX_ALIAS` | no | Alternative URL prefix for the dashboard (default `/nautilus`) |
 | `INTERNAL_TOKEN` | no | Shared token for the position-history backend APIs |

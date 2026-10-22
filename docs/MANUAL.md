@@ -247,6 +247,28 @@ sailing) it does nothing and logs "no action"; it only resets the LTE
 interface (and reboots after three consecutive failures) when the modem is
 connected but the tunnel is stuck.
 
+A second KNOT-side script, **`ble-crash-capture`** (scheduler `check-ble-watchdog`
+every 30 s), captures the BLE driver crashes behind the GATT drops: when the
+bt1 scanner disappears or the bt1 controller goes offline for two consecutive
+checks, it logs a warning with the exact RouterOS time, runs `/system
+sup-output` immediately (at most once per 30 min), and attempts the scanner
+recovery. Two lessons from the 2026-10-22 crash on knotCalm:
+
+- `/iot bluetooth scanners` has **no `add` command** — its items are fixed and
+  tied to the bluetooth device (exports show `set bt1`). The old recovery line
+  `/iot bluetooth scanners add name=bt1` always failed with
+  `bad command name add`. The correct verb is `set bt1 disabled=no`, and only
+  once the driver is online again.
+- When the bt1 controller itself is offline (all counters zero, public address
+  00:00:00:00:00:00) no console command recovers it: a **KNOT reboot** reloads
+  the driver, and the scanner is recreated automatically on load. The script
+  now logs exactly that in its `on-error` branch.
+
+The telemetry LXC collects the rif files: `/root/knot-rif-collector.sh`
+(cron every 5 min) watches the KNOT log for the crash marker and archives
+`supout.rif` to `/root/knot-rifs/ble-crash-<timestamp>.rif` (crashes captured:
+2026-09-28 and 2026-10-22).
+
 ### Timezone labelling (v1.24.0/v1.25.0)
 
 The KNOT clock is synced from GPS (`set-system-time=yes`, no NTP: the GPS

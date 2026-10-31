@@ -2188,7 +2188,7 @@ app = Flask(__name__)
 URL_PREFIX_ALIAS = os.environ.get("URL_PREFIX_ALIAS") or "/nautilus"
 # boat name shown in the dashboard
 BOAT_NAME = os.environ.get("BOAT_NAME", "Nautilus")
-VERSION = "1.36.10"
+VERSION = "1.36.11"
 
 
 @app.route("/api/data")
@@ -2473,6 +2473,55 @@ def api_ble_devices():
                         "selected": _selected_ble_macs() or []})
     except Exception as exc:
         return jsonify({"error": "KNOT unreachable: %s" % exc}), 503
+
+
+@app.route("/api/ble/devices/<mac>", methods=["POST"])
+@app.route("/nautilus/api/ble/devices/<mac>", methods=["POST"])
+@app.route(URL_PREFIX_ALIAS + "/api/ble/devices/<mac>", methods=["POST"])
+def api_ble_device_update(mac):
+    """Rename a BLE peripheral or change its persistence on the KNOT."""
+    global _bm6_dev_name
+    if not re.fullmatch(r"[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}", mac):
+        return jsonify({"error": "invalid MAC address"}), 400
+    body = request.get_json(silent=True) or {}
+    if not isinstance(body, dict):
+        return jsonify({"error": "JSON body must be an object"}), 400
+    updates = {}
+    if set(body) == {"name"}:
+        name = body.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return jsonify({"error": "name is required"}), 400
+        name = name.strip()
+        if len(name) > 40:
+            return jsonify({"error": "name must be at most 40 characters"}), 400
+        updates["name"] = name
+    elif set(body) == {"persist"}:
+        if not isinstance(body["persist"], bool):
+            return jsonify({"error": "persist must be a boolean"}), 400
+        updates["persist"] = "true" if body["persist"] else "false"
+    else:
+        return jsonify({"error": "provide exactly one of name or persist"}), 400
+    try:
+        auth = requests.auth.HTTPBasicAuth(KNOT_USER, KNOT_PASS)
+        r = requests.get(KNOT_URL, auth=auth, timeout=10)
+        r.raise_for_status()
+        device = next((d for d in r.json()
+                       if d.get("address", "").upper() == mac.upper()), None)
+        if not device:
+            return jsonify({"error": "BLE device not seen by the KNOT"}), 404
+        payload = {"numbers": device[".id"], **updates}
+        r = requests.post(KNOT_URL + "/set", auth=auth, timeout=15, json=payload)
+        r.raise_for_status()
+        if "name" in updates and mac.upper() == BM6_MAC:
+            _bm6_dev_name = None
+        return jsonify({"device": {
+            "id": device[".id"],
+            "mac": mac.upper(),
+            "name": updates.get("name", device.get("name", "")),
+            "persist": updates.get("persist", device.get("persist")) == "true",
+        }})
+    except Exception as exc:
+        return jsonify({"error": "KNOT update failed: %s" % exc}), 502
 
 
 @app.route("/api/settings", methods=["POST"])
@@ -3581,11 +3630,12 @@ SETTINGS_HTML = """<!DOCTYPE html>
 
 <div class="card">
   <h2>BLE devices</h2>
-  <p class="hint">All BLE devices seen by the KNOT. Select only the ones you need: with an active selection the poll fetches just those devices (~70% less tunnel traffic for the BLE poll). The selection is saved on disk and survives restarts. Without a selection the poll fetches all persistent devices with a single full scan.</p>
+  <p class="hint">All BLE devices seen by the KNOT. Select only the ones you need: with an active selection the poll fetches just those devices (~70% less tunnel traffic for the BLE poll). The selection and app-side notes are saved on disk. KNOT names and persistence changes apply to the router immediately.</p>
   <div id="ble-list" style="margin-top:10px">
     <p class="hint" style="margin:0">Loading device list…</p>
   </div>
   <button class="btn" style="margin-top:12px" onclick="saveBle()">Save selection</button>
+  <button class="btn reset" style="margin-top:12px" onclick="clearBle()">Clear selection</button>
 </div>
 
 <div class="card">
@@ -3619,8 +3669,6 @@ SETTINGS_HTML = """<!DOCTYPE html>
       </div>
     </div>
   </div>
-</div>
-  <button class="btn reset" style="margin-top:12px" onclick="clearBle()">Clear selection</button>
 </div>
 
 <button class="btn" onclick="save()">Save</button>
@@ -3744,27 +3792,75 @@ async function loadBle() {
   const box = document.getElementById("ble-list");
   try {
     const d = await (await fetch("api/ble/devices")).json();
-    if (d.error) { box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>" + d.error + "</p>"; return; }
+    if (d.error) { box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>" + esc(d.error) + "</p>"; return; }
     const sel = new Set(d.selected || []);
     if (!d.devices.length) { box.innerHTML = "<p class='hint' style='margin:0'>No BLE devices seen by the KNOT yet.</p>"; return; }
     box.innerHTML = d.devices.map(function(dev) {
       const checked = sel.has(dev.mac.toUpperCase()) ? " checked" : "";
       const tag = dev.persist ? " <span style='color:#34d399;font-size:.68rem'>&#9679; persistent</span>" : "";
-      const rssi = dev.rssi != null ? dev.rssi + " dBm" : "no signal";
-      return "<label style='display:block;padding:7px 0;border-bottom:1px solid var(--border);cursor:pointer'>" +
-        "<span style='display:flex;align-items:center;gap:10px'>" +
-        "<input type='checkbox' class='ble-chk' value='" + dev.mac + "'" + checked + ">" +
-        "<span style='flex:1'><b style='font-size:.8rem'>" + (dev.name || "(unnamed)") + "</b>" + tag +
-        "<br><small style='color:#64748b;font-size:.68rem'>" + dev.mac + " · " + rssi + "</small></span>" +
-        "</span>" +
-        "<span style='display:flex;align-items:center;gap:10px;margin-top:5px'>" +
-        "<span style='width:16px'></span>" +
-        "<input type='text' class='ble-note' data-mac='" + dev.mac + "' value='" + String(dev.note || "").replace(/'/g, "&#39;") + "'" +
-        " placeholder='note (used as the device title in the Victron list)' maxlength='40' style='flex:1;background:#0f172a;color:#e2e8f0;border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem'></span></label>";
+      const mac = esc(dev.mac || "").replace(/'/g, "&#39;");
+      const rssi = esc(dev.rssi != null ? dev.rssi + " dBm" : "no signal");
+      const name = esc(dev.name || "").replace(/'/g, "&#39;");
+      const note = esc(dev.note || "").replace(/'/g, "&#39;");
+      return `<div style='padding:9px 0;border-bottom:1px solid var(--border)'>
+        <div style='display:flex;align-items:center;gap:10px;flex-wrap:wrap'>
+          <input type='checkbox' class='ble-chk' value='${mac}'${checked} aria-label='Poll ${mac}'>
+          <span style='flex:1;min-width:210px'><b style='font-size:.8rem'>${esc(dev.name || "(unnamed)")}</b>${tag}
+          <br><small style='color:var(--text-muted);font-size:.68rem'>${mac} · ${rssi}</small></span>
+          <button type='button' class='btn ble-persist' data-mac='${mac}' data-next-persist='${!dev.persist}' style='padding:5px 9px;font-size:.7rem;margin:0'>${dev.persist ? "Remove persistence" : "Make persistent"}</button>
+        </div>
+        <div style='display:flex;align-items:center;gap:7px;margin-top:7px'>
+          <span style='width:16px'></span>
+          <input type='text' class='ble-name' data-mac='${mac}' value='${name}' maxlength='40' aria-label='KNOT name for ${mac}' placeholder='KNOT device name' style='flex:1;min-width:160px;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem'>
+          <button type='button' class='btn ble-save-name' data-mac='${mac}' style='padding:5px 9px;font-size:.7rem;margin:0'>Save name</button>
+        </div>
+        <div style='display:flex;align-items:center;gap:7px;margin-top:5px'>
+          <span style='width:16px'></span>
+          <input type='text' class='ble-note' data-mac='${mac}' value='${note}' placeholder='app note (used as the Victron list title)' maxlength='40' style='flex:1;background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 8px;font-size:.78rem'>
+        </div>
+      </div>`;
     }).join("");
+    box.querySelectorAll(".ble-persist").forEach(function(button) {
+      button.addEventListener("click", function() {
+        bleSetPersist(button.dataset.mac, button.dataset.nextPersist === "true");
+      });
+    });
+    box.querySelectorAll(".ble-save-name").forEach(function(button) {
+      button.addEventListener("click", function() { bleSaveName(button.dataset.mac); });
+    });
   } catch (e) {
     box.innerHTML = "<p class='hint' style='margin:0;color:#f87171'>KNOT unreachable</p>";
   }
+}
+async function bleUpdate(mac, body) {
+  const msg = document.getElementById("msg");
+  msg.className = "msg";
+  msg.textContent = "Updating KNOT…";
+  try {
+    const r = await fetch("api/ble/devices/" + encodeURIComponent(mac), {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body)
+    });
+    const d = await r.json();
+    if (!r.ok) { msg.className = "msg err"; msg.textContent = d.error || "KNOT update failed"; return; }
+    msg.className = "msg ok";
+    msg.textContent = "KNOT device updated ✓";
+    await loadBle();
+  } catch (e) {
+    msg.className = "msg err";
+    msg.textContent = "KNOT unreachable";
+  }
+}
+async function bleSaveName(mac) {
+  const input = Array.from(document.querySelectorAll(".ble-name")).find(i => i.dataset.mac === mac);
+  const name = input ? input.value.trim() : "";
+  const msg = document.getElementById("msg");
+  if (!name) { msg.className = "msg err"; msg.textContent = "KNOT name is required"; return; }
+  await bleUpdate(mac, {name: name});
+}
+async function bleSetPersist(mac, persist) {
+  if (!persist && !confirm("Remove KNOT persistence for " + mac + "? The device may disappear from the list when it is no longer seen.")) return;
+  await bleUpdate(mac, {persist: persist});
 }
 async function saveBle() {
   const msg = document.getElementById("msg");

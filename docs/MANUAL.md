@@ -134,7 +134,7 @@ All configuration is via environment variables (see `.env.example`):
 | `DATA_BUDGET_MB` | no | Monthly SIM data budget in MB for the usage card (default 1000) |
 | `DATA_USAGE_POLL_SECONDS` | no | WireGuard counter sampling interval (default 600 s) |
 
-### BLE device selection (Settings page)
+### BLE device selection and KNOT management (Settings page)
 
 The Settings page lists **all BLE devices seen by the KNOT** (not only the
 persistent ones). Selecting a subset and saving changes the main poll: with
@@ -146,9 +146,16 @@ default behaviour (full scan, persistent devices only). The listing endpoint
 is `GET /api/ble/devices` (sorted by RSSI, strongest first, with the saved
 notes); the selection and notes are saved via `POST /api/settings`
 with `{"BLE_DEVICES": ["MAC", ...]}` and `{"BLE_NOTES": {"MAC": "text"}}`
-(or `null` to clear). Notes are stored app-side (they work with a read-only
-REST user); the KNOT's own `persist` flag and device `name` can only be
-changed by an admin user on the router.
+(or `null` to clear). Notes are stored app-side and are separate from the
+KNOT device name.
+
+Each row also provides **Save name** and **Make persistent** / **Remove
+persistence** controls (v1.36.11). These update the KNOT immediately through
+`POST /api/ble/devices/<mac>` with `{"name": "New name"}` or
+`{"persist": true|false}`; the REST user needs RouterOS write permission.
+Removing persistence can make a device disappear from the list when it is no
+longer seen. Renaming the configured BM6 also invalidates its cached GATT
+name, so the next GATT cycle discovers the new name automatically.
 
 ### Persistent settings (v1.17.0)
 

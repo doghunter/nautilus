@@ -373,8 +373,18 @@ directory as a volume to persist it).
 
 The dashboard shows a graph of the day's production (30-minute averages) with
 yesterday's curve and a forecast (average of up to 7 previous days with data)
-overlaid; the card header shows the approximate Wh produced today. The data is
-served by `/api/solar/daily`:
+overlaid; the card header shows the approximate Wh produced today.
+
+The `SOLAR_HISTORY_DAYS` setting is a maximum, not a waiting period: one
+eligible day with samples is enough to generate a forecast. Yesterday is shown
+as its own grey curve and is **excluded** from the forecast average, which uses
+recorded days starting two days ago. On a new installation the forecast is
+therefore `null` for the first two calendar days: tomorrow shows today's curve
+as yesterday, and the first forecast appears the day after tomorrow. A useful
+average requires complete recorded days, not only a few nighttime samples.
+The same timing applies to the **Current used** forecast.
+
+The solar data is served by `/api/solar/daily`:
 
 ```json
 {"today": [[9.5, 12.3], ...], "yesterday": [[...]],
@@ -421,7 +431,7 @@ restart restores the `.env` values ("Reset all" does the same immediately).
 | `GATT_POLL_SECONDS` | 60–3600 | BM6 GATT read cadence |
 | `STATIONARY_SPEED_KN` | 0–20 | Stationary threshold for the adaptive GPS skip |
 | `GPS_STATIONARY_INTERVAL` | 30–7200 | GPS interval while stationary |
-| `SOLAR_HISTORY_DAYS` | 1–30 | Days feeding the forecast average |
+| `SOLAR_HISTORY_DAYS` | 1–30 | Maximum eligible days with samples used in the forecast (starting two days ago; yesterday excluded) |
 
 API: `GET/POST /api/settings` (POST accepts a JSON object with numeric
 values, `null` clears an override). Limits are enforced server-side.

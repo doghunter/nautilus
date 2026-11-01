@@ -29,7 +29,7 @@ management app (document archive + expense log): see [conticini/](conticini/).
   overlay, historical track page with date-range filters, clear "no data"
   indicators when a sensor stops transmitting.
 - **Adaptive GPS reporting** — when the boat is stationary the expensive blocking GPS call to the KNOT is skipped (configurable interval), reducing power and data consumption.
-- **Solar production history** — power samples are logged to SQLite and shown as a daily graph (today vs. yesterday) with a forecast built from previous days.
+- **Solar production history** — power samples are logged to SQLite and shown as a daily graph (today vs. yesterday) with a forecast built from up to the configured number of previous days with data. Yesterday is shown separately and excluded from the forecast, so a new installation shows its first forecast on the third calendar day of recording; there is no need to wait for all configured history days.
 - **Settings page** — all polling intervals (including night mode and the adaptive GPS skip) editable live from the dashboard.
 - **BLE device management** — select which KNOT peripherals to poll, add app-side notes, edit KNOT device names, and make devices persistent or remove their persistence directly from Settings.
 - **Consumption monitoring** — load current is logged too; a "Current used" graph sits next to solar production, and a `/stats` page totals produced/consumed energy by month and year with the net balance, plus per-month average solar day charts to compare the irradiation window month by month.

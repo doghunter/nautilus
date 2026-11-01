@@ -31,6 +31,7 @@ management app (document archive + expense log): see [conticini/](conticini/).
 - **Adaptive GPS reporting** — when the boat is stationary the expensive blocking GPS call to the KNOT is skipped (configurable interval), reducing power and data consumption.
 - **Solar production history** — power samples are logged to SQLite and shown as a daily graph (today vs. yesterday) with a forecast built from previous days.
 - **Settings page** — all polling intervals (including night mode and the adaptive GPS skip) editable live from the dashboard.
+- **BLE device management** — select which KNOT peripherals to poll, add app-side notes, edit KNOT device names, and make devices persistent or remove their persistence directly from Settings.
 - **Consumption monitoring** — load current is logged too; a "Current used" graph sits next to solar production, and a `/stats` page totals produced/consumed energy by month and year with the net balance, plus per-month average solar day charts to compare the irradiation window month by month.
 - **Victron devices** — multiple SmartSolar/SmartShunt units decoded from their encrypted Instant Readout advertisements, configured from a Settings UI (encryption key, or serial+PUK with automatic key derivation).
 - **No-coverage GPS buffer** — the KNOT keeps logging GPS fixes while out of cellular range; on reconnection the track is rebuilt and the recovered points are highlighted (also in the KML export for Google Earth).

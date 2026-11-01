@@ -157,6 +157,10 @@ Removing persistence can make a device disappear from the list when it is no
 longer seen. Renaming the configured BM6 also invalidates its cached GATT
 name, so the next GATT cycle discovers the new name automatically.
 
+**Save selection** applies only to the polling checkboxes and app-side notes.
+The KNOT name and persistence buttons work independently and take effect
+immediately; they do not change which devices are selected for polling.
+
 ### Persistent settings (v1.17.0)
 
 Every value saved in the Settings page — polling intervals, GPS/GATT
